@@ -12,7 +12,7 @@ target_include_directories(native_app_glue PUBLIC
         ${ANDROID_NDK}/sources/android/native_app_glue)
 target_link_libraries(native_app_glue android log)
 
-add_library(lxmusicc SHARED main.c)
+add_library(lxmusicc SHARED main.c render.c ui.c platform.c)
 
 target_include_directories(lxmusicc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(lxmusicc PRIVATE -Wall -Wextra -Wno-unused-parameter)
