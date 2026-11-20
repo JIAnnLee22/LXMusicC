@@ -17,7 +17,7 @@
   - 音源持久化到应用私有目录；重启后仍在
   - 验收：能导入至少一个真实 LX 音源并看到元数据；非法输入不崩
 
-- [ ] `03-source-runtime` 音源请求执行（JS + HTTP）
+- [x] `03-source-runtime` 音源请求执行（JS + HTTP）
   - 引入纯 C JS 引擎（QuickJS 或 duktape，vendor 源码）执行 LX 音源脚本的 `musicUrl`/`lyric`/`search` 等 handler
   - 实现最小 LX 兼容层（`lx.request`、实际用到的 utils）；网络请求由桥接完成
   - 若 1 轮内跑不通 JS，则先支持“声明式 URL 模板”类音源，并把 JS 执行拆成后续条目写入 `docs/DECISIONS.md`

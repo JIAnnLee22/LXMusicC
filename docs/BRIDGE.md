@@ -34,6 +34,20 @@ C 包装入口：`bool source_bridge_paste(ANativeActivity*)`、`char *source_br
 
 所有 C 端 GetObjectClass/GetMethodID、字符串/数组分配读取及 Call*Method 都检查异常与返回值，异常清除并记录 `LXMusicC`；PushLocalFrame/PopLocalFrame 限定局部引用，按需 attach/detach。URL 仅接受 ASCII（非 ASCII 路径需百分号编码），避免 NewStringUTF 的 modified UTF-8 歧义；正文使用 ByteArray，不用 GetStringUTFChars。后者仅用于桥接内固定 BMP 中文错误消息，取出后复制、立即 Release。
 
-下载最多 5 次重定向，校验每跳 HTTP(S)、禁止 URL 凭据及 HTTPS 降级；单个正文最多 2 MiB，连接超时 2 秒、读超时 1 秒，循环检查 30 秒总时限和取消位。系统 DNS/底层调用不保证遵守硬截止，取消为尽力而为，不在主线程关闭 socket。失败不修改存储，可重新粘贴重试。HTTP 明文仅为用户显式粘贴的地址开放，建议使用 HTTPS；未请求的地址、元数据 homepage 和脚本本身不会被执行/访问。
+下载最多 5 次重定向，校验每跳 HTTP(S)、禁止 URL 凭据及 HTTPS 降级；单个正文最多 2 MiB，连接超时 2 秒、读超时 1 秒，循环检查 30 秒总时限和取消位。系统 DNS/底层调用不保证遵守硬截止，取消为尽力而为，不在主线程关闭 socket。失败不修改存储，可重新粘贴重试。02 阶段 HTTP 明文仅用于用户显式粘贴的地址；03 阶段显式自检还允许可信脚本发起 HTTP 请求，均建议使用 HTTPS。导入/启用不自动执行，元数据 homepage 不自动访问。
+
+## 音源运行时 HTTP（03-source-runtime）
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| C → SourceActivity | `requestRuntime` | `([B)[B` | 音源 C 工作线程，同步调用 `RuntimeHttp.execute` | 非 null 标准 UTF-8 JSON 字节；成功 `{statusCode,headers,body}`，传输失败 `{error}`；HTTP 非 2xx 仍是成功传输，由脚本判断 |
+
+C 包装：`char *source_bridge_http(void *context,const char *request,char error[256])`；context 为当前 `ANativeActivity*`。请求 `{url,method,headers,body,timeout}`，body 为字符串或 null；正文 JSON/form 编码、查询参数与 LX 回调由 C 所运行的 JS 兼容层处理，Kotlin 不处理 LX 事件或歌曲。返回 JSON 中 headers 名小写、body 为原始 UTF-8 字符串（即便 Content-Type 是 JSON）；兼容层再尝试解析并向 `(err,response,body)` 传递结果。无新增 Java→C 回调。
+
+两向都是 ByteArray：C 检查 GetObjectClass/GetMethodID、NewByteArray、SetByteArrayRegion、CallObjectMethod、GetArrayLength、GetByteArrayRegion 的异常和返回值，Push/PopLocalFrame、attach/detach，读取后不保留 JNI 引用。请求上限 2 MiB；原始响应上限 2 MiB，gzip 解压后也检查；JSON 封装可能转义膨胀，C 另限 `2 MiB × 6 + 64 KiB` 并验证 UTF-8。失败返回 heap=NULL + 可读错误；正常返回 heap JSON，由运行时 free。
+
+HTTP 支持 GET/POST/PUT/DELETE/PATCH/HEAD、请求头和 UTF-8 正文；仅无凭据 HTTP(S)、ASCII/百分号地址，禁止 HTTPS 降级。最多 5 跳重定向；303 和 POST 的 301/302 改 GET（HEAD 保持），跨站去除所有自定义头，携带正文的跨站跳转拒绝。Host/长度/连接/压缩等传输头由系统控制。连接超时最多 2 秒、读超时最多 1 秒，单请求总时限由 timeout 夹在 100 ms..30 s（默认 15 s）；读写分块检查取消/时限。状态 ≥400 读取 errorStream；HEAD/空响应合法。仅 UTF-8 文本，非 UTF-8/multipart/二进制响应明确不支持。TLS 采用系统验证，不绕过证书。
+
+销毁仍通过 `cancelSourceFetch()V` 的 volatile closing 位中止导入和运行时 HTTP；NativeActivity 退出时先取消再 join。无网络 IO 在主/GL 线程；不在主线程关闭 socket。系统 DNS、建连/写 socket 等底层调用不承诺硬总时限；JS cancel 函数可删除尚未发出的队列任务，已开始的同步系统请求只能在返回/读写检查点看到 Activity 取消和超时，JS timer 在此期间不会并行执行。
 
 **JVM 装载要求**：Kotlin companion 显式 `System.loadLibrary("lxmusicc")`；NativeActivity 自己的 dlopen 不会把库登记到 JVM ClassLoader 的 native 方法查找表，单靠 manifest 的 `android.app.lib_name` 会导致 nativePaste 出现 UnsatisfiedLinkError。AGP 9 使用内置 Kotlin 支持，无新增 Kotlin 插件/第三方运行时 SDK。

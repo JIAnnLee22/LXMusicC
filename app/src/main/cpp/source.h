@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "source_runtime.h"
 #define SOURCE_LIMIT 32
 #define SOURCE_BYTES (2u*1024u*1024u)
 #define SOURCE_TOTAL (8u*1024u*1024u)
@@ -23,9 +24,9 @@ bool source_parse(const char *input,size_t length,SourceMeta *meta,char **script
 bool source_utf8(const char *s,size_t n);
 typedef char *(*SourceFetch)(void *context,const char *url,char error[256]);
 typedef void (*SourceWake)(void *context);
-enum { SOURCE_IMPORT=1, SOURCE_TOGGLE, SOURCE_DELETE, SOURCE_UP, SOURCE_DOWN };
+enum { SOURCE_IMPORT=1, SOURCE_TOGGLE, SOURCE_DELETE, SOURCE_UP, SOURCE_DOWN, SOURCE_CHECK };
 /* 单实例。启动/停止由 NativeActivity 线程调用，IO 与解析在内部工作线程。 */
-bool source_start(const char *directory,SourceFetch fetch,SourceWake wake,void *context);
+bool source_start(const char *directory,SourceFetch fetch,RuntimeHttp http,SourceWake wake,void *context);
 void source_stop(void);
 bool source_command(int action,uint32_t id,const char *input,size_t length);
 void source_message(const char *message);

@@ -10,7 +10,7 @@ static const char *TABS[]={"歌曲","搜索","正在播放","设置"};
 static const char *FILTERS[]={"收藏","最近播放","我的歌单"};
 enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SOURCE_OPEN, ACT_SOURCE_BACK, ACT_SOURCE_PASTE, ACT_SOURCE_PAGE,
-    ACT_SOURCE_TOGGLE, ACT_SOURCE_DELETE, ACT_SOURCE_UP, ACT_SOURCE_DOWN };
+    ACT_SOURCE_TOGGLE, ACT_SOURCE_DELETE, ACT_SOURCE_UP, ACT_SOURCE_DOWN, ACT_SOURCE_CHECK };
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
 static float clamp(float x,float a,float b) { return fminf(fmaxf(x,a),b); }
@@ -177,6 +177,8 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
         button(u,r,(Rect){x+bw+6,y,bw,36},"上移",ACT_SOURCE_UP,(int)m->id,false);
         button(u,r,(Rect){x+2*(bw+6),y,bw,36},"下移",ACT_SOURCE_DOWN,(int)m->id,false);
         button(u,r,(Rect){x+3*(bw+6),y,bw,36},u->delete_id==m->id?"确认删除":"删除",ACT_SOURCE_DELETE,(int)m->id,false);
+        y+=46;
+        button(u,r,(Rect){x,y,w,36},"搜索自检（love）",ACT_SOURCE_CHECK,(int)m->id,false);
         y+=58;
     }
     return y-start;
@@ -189,7 +191,7 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
     const char *titles[]={"音源管理","缓存管理","仅 Wi-Fi 下载","主题外观","后台播放","数据与隐私","关于"};
     char source_count[64]; snprintf(source_count,sizeof(source_count),"%d 个音源 / 点击管理",u->sources.count);
     const char *values[]={source_count,"暂无缓存","尚未开放","深色 / 薄荷绿","尚未开放","本地优先","音源导入"};
-    const char *details[]={"粘贴导入与音源管理","公共音乐目录缓存将在后续开放","下载功能尚未开放","当前提供固定深色主题","播放服务与通知将在后续开放","仅在链接导入时下载，不执行脚本","纯 C 界面 · Android 8.0 及以上"};
+    const char *details[]={"粘贴导入与音源管理","公共音乐目录缓存将在后续开放","下载功能尚未开放","当前提供固定深色主题","播放服务与通知将在后续开放","导入不执行；自检运行可信音源并联网","纯 C 界面 · Android 8.0 及以上"};
     for(int i=0;i<7;++i) {
         bool selected=u->state.settings_row==i;
         float h=selected?112:78;
@@ -300,6 +302,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
             case ACT_SOURCE_TOGGLE: source_command(SOURCE_TOGGLE,(uint32_t)h.value,NULL,0); break;
             case ACT_SOURCE_UP: source_command(SOURCE_UP,(uint32_t)h.value,NULL,0); break;
             case ACT_SOURCE_DOWN: source_command(SOURCE_DOWN,(uint32_t)h.value,NULL,0); break;
+            case ACT_SOURCE_CHECK: source_command(SOURCE_CHECK,(uint32_t)h.value,NULL,0); break;
             case ACT_SOURCE_DELETE:
                 if(u->delete_id==(uint32_t)h.value) { source_command(SOURCE_DELETE,u->delete_id,NULL,0); u->delete_id=0; }
                 else u->delete_id=(uint32_t)h.value;

@@ -204,7 +204,7 @@ void android_main(struct android_app *app) {
     ui_init(&e.ui,restore); atomic_init(&e.font_status,0);
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
-    bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_wake,app->activity);
+    bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
     double previous=seconds();
     while(!app->destroyRequested) {
         int status=atomic_load_explicit(&e.font_status,memory_order_acquire);

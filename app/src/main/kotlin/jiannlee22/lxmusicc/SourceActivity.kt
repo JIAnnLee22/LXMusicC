@@ -20,6 +20,9 @@ class SourceActivity : NativeActivity() {
 
     fun cancelSourceFetch() { closing = true }
 
+    /** C 工作线程调用；标准 UTF-8 JSON 字节，不使用 JNI modified UTF-8。 */
+    fun requestRuntime(data: ByteArray): ByteArray = RuntimeHttp.execute(data) { closing }
+
     fun requestSourcePaste(): Boolean {
         if (closing) return false
         runOnUiThread {

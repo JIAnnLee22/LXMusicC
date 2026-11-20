@@ -21,3 +21,13 @@
 - **JVM native 装载**：NativeActivity dlopen 不能替代 System.loadLibrary 的 JVM 注册；实测剪贴板回调曾因此找不到 nativePaste，已通过 Kotlin companion 显式装载修复，后续模拟器回调成功。
 - **中文元数据**：仅原 UI 文案子集无法显示真实音源描述。针对本轮扩充到 GB2312 常用 6763 汉字及文案，保持纯 C SDF 渲染，代价是 16 MiB atlas/CPU 与同量 GPU 空间；不提前开发完整动态 Unicode 字形缓存，罕见字/部分繁体/emoji 仍回退。来源与许可不变，度量压紧到 <800 行。
 - **发布边界**：版本仍为 0.1.0；只更新 02 验收，不增 workflow push 分支触发，不打标签/建 Release。本地构建 APK 仅用于验收，不作为本轮发布产物。
+
+## 03-source-runtime
+
+- **引擎选择**：vendor Bellard QuickJS 2025-09-13（MIT，原始归档及校验见 vendor/quickjs/README.md），可直接运行 ES6+/async/Promise，避免 duktape 的 Promise/现代语法兼容成本。不链接 quickjs-libc、不开放文件、进程或模块加载；资源限制不是 OS 安全沙箱，仍只执行可信脚本。上游原样大文件/生成表是 ≤800 行规则的第三方例外，自写 C/Kotlin 文件仍满足限制。
+- **LX 与搜索边界**：官方 [移动自定义源文档](https://lxmusic.toside.cn/mobile/custom-source) 中常规源只有 musicUrl，local 可含 lyric/pic，搜索由宿主完成。PLAN 要求示例搜索，因此保留官方 `{source,action,info}` 请求形式，同时显式扩展 search 和自有 provider key；不宣称普通社区源会自动获得搜索能力，不修改 03 验收项或提前实现 04 的内置多源搜索。
+- **最小能力**：提供 mobile/2.0.0、currentScriptInfo、request/inited/updateAlert 事件、HTTP 回调/取消、Promise job、setTimeout/clearTimeout、buffer UTF-8/hex/base64 互转。示例实际使用 buffer；本轮不引入未用到的 crypto（md5/AES/RSA/randomBytes）、zlib、Node/浏览器 API、multipart/二进制 HTTP。依赖这些能力的脚本会报执行错误，不保证真实六音等大型混淆脚本运行，也不偷偷回退为模板或伪造歌曲。
+- **真实示例**：使用 Apple iTunes Search API 的公开 song 元数据和 previewUrl，无第三方聚合代理/密钥/会员解析。歌曲数组含真实名称、歌手、专辑、时长、质量标签和 HTTP 预览下载地址；质量诚实标记 preview-aac，不猜 bitrate。时长为完整歌曲元数据、音频只有短预览；无歌词则返回空 lyric。musicUrl handler 用真实 HEAD 验证地址，不下载音频、不提前实现缓存/播放。
+- **执行入口与状态**：只在音源管理增加固定关键字 love 的显式自检，导入/启用/冷启动仍不执行；自检依次 search→首曲 musicUrl→lyric，标准源缺 search 时直说。每次 action 新建/释放 JS 上下文，牺牲初始化复用换取清晰生命周期和失败重试；本轮没有自由输入/聚合/去重/搜索页结果，下一条再接入运行时公共接口。
+- **有界调度**：沿用单槽命令和单工作线程，HTTP/JS/IO 串行不持 UI 锁。每 action 32 MiB JS heap、512 KiB JS 栈、40 秒 JS 截止/取消中断、最多 32 个待处理任务/256 个累计任务/16 次 HTTP；响应与结果大小有界，搜索最多规范化前 30 曲并标记 has_more。同步系统 HTTP 期间不能并行执行 JS timer/cancel；系统 DNS/写 socket 不保证硬超时，见 BRIDGE.md。
+- **发布范围**：保持 0.1.0、既有 workflow 和标签发布机制；不新增依赖 SDK/Java 源码/测试用例，不打 tag 或建 Release。本轮只勾选 03，不开始 04。

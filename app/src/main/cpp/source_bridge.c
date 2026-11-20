@@ -87,6 +87,39 @@ end:
     if(detach) (*activity->vm)->DetachCurrentThread(activity->vm);
     return output;
 }
+char *source_bridge_http(void *context,const char *request,char error[256]) {
+    ANativeActivity *activity=context;
+    bool detach; JNIEnv *env=attach(activity,&detach); char *output=NULL;
+    snprintf(error,256,"系统 HTTP 桥接失败，请重试");
+    size_t length=strlen(request);
+    if(!env) return NULL;
+    if((*env)->PushLocalFrame(env,8)<0) { checked(env); goto end; }
+    if(length>SOURCE_BYTES) goto pop;
+    jclass cls=(*env)->GetObjectClass(env,activity->clazz);
+    if(!checked(env) || !cls) goto pop;
+    jmethodID method=(*env)->GetMethodID(env,cls,"requestRuntime","([B)[B");
+    if(!checked(env) || !method) goto pop;
+    jbyteArray input=(*env)->NewByteArray(env,(jsize)length);
+    if(!checked(env) || !input) goto pop;
+    (*env)->SetByteArrayRegion(env,input,0,(jsize)length,(const jbyte *)request);
+    if(!checked(env)) goto pop;
+    jbyteArray bytes=(*env)->CallObjectMethod(env,activity->clazz,method,input);
+    if(!checked(env) || !bytes) goto pop;
+    jsize n=(*env)->GetArrayLength(env,bytes);
+    if(!checked(env) || n<=0 || n>(jsize)(SOURCE_BYTES*6u+65536u)) goto pop;
+    char *data=malloc((size_t)n+1);
+    if(!data) { snprintf(error,256,"内存不足，请重试"); goto pop; }
+    (*env)->GetByteArrayRegion(env,bytes,0,n,(jbyte *)data);
+    if(!checked(env)) { free(data); goto pop; }
+    data[n]=0;
+    if(!source_utf8(data,(size_t)n)) { free(data); goto pop; }
+    output=data;
+pop:
+    (*env)->PopLocalFrame(env,NULL);
+end:
+    if(detach) (*activity->vm)->DetachCurrentThread(activity->vm);
+    return output;
+}
 JNIEXPORT void JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativePaste(JNIEnv *env,jobject obj,jbyteArray bytes,jstring error) {
     (void)obj;
     if(error) {

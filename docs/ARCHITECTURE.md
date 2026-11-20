@@ -75,3 +75,43 @@
 - 切换六音为禁用并下移，force-stop 后启动：Tisfy 在前、六音在后且禁用状态保留；二次确认删除使计数 2→1，重新导入文件文本 1→2。最终版本覆盖安装/冷启动再次显示恢复数量及状态。
 - 非法 JSON、普通非音源文本、无法连接的 HTTP 地址均显示可读错误，仍可再次粘贴；失败前后私有存储 SHA-256 同为 `578a63c4df0afa3d9574ca9f786f749b39e1da1238f5a6a980932fffeacbc556`。未触发最终版本 AndroidRuntime 崩溃。
 - 横竖屏、滚动布局、返回管理上级正常；`git diff --check` 通过。未改 workflow、未创建标签/Release；仅勾选 02，未实现 JS 运行时或后续搜索。
+
+## 03-source-runtime：JS 请求执行
+
+| 模块 | 职责 |
+| --- | --- |
+| `vendor/quickjs/` | 固定 MIT 纯 C 引擎、正则、Unicode、浮点转换，不链接 OS/CLI 标准库 |
+| `source_runtime.[ch]` | 独立上下文、任务队列、Promise pump、中断/资源限制、歌曲数组校验与有界 C 结构 |
+| `lx_compat.js` | 最小 LX mobile 2.0.0 全局对象、事件能力表、HTTP 参数/回调、buffer 编解码、timer；CMake 转成编译期字符串，无运行时磁盘加载 |
+| `RuntimeHttp.kt` / `source_bridge.[ch]` | 系统 HTTP(S) 和 JSON 字节传输，无歌曲/音源业务，JNI 详见 BRIDGE.md |
+| `source.c` / `ui.c` | 单槽命令 `SOURCE_CHECK`，仅对启用源显式自检并显示可重试摘要；不改搜索页 |
+| `docs/examples/itunes-preview.js` | 可直接粘贴导入的真实公共预览音源，明确标记扩展协议 |
+
+### 调用与数据
+`runtime_call(script,provider,action,info_json,http,cancelled,context,result,error)` 只能在后台线程调用。script 必须通过既有 LX 注释/UTF-8 解析；传入原始元数据和 rawScript。provider=NULL 时选择 inited.sources 中首个宣告该 action 的 provider；显式 provider 则校验其 actions。初始化可通过异步 HTTP/timer 发送 inited；没有 handler/能力、初始化/handler 抛错、Promise 没有可执行后续任务、HTTP 失败、JSON/歌曲字段不合法均返回可读错误。没有静默模板回退。
+
+每 action 创建新的 QuickJS Runtime/Context，注入兼容层后执行脚本，等待 inited，再调用 `handler({source,action,info})`。先 pump Promise jobs，后执行最早到期的 HTTP/timer；网络同步走系统桥接，不占 GL/Java 主线程，也不持 service.lock。`lx.request` 回调在同一 JS 工作线程执行，Promise 可继续链式处理；取消函数删除尚未开始的任务。所有异步任务/返回值由 QuickJS 引用计数管理，退出释放 JSValue、请求缓冲、上下文和 Runtime。Activity 取消与 running 状态由 volatile/互斥锁检查，退出 join 后才释放 Activity 上下文。
+
+`RuntimeResult` 由调用者置于 heap，结束调用 `runtime_result_free`。search 必须返回数组，元素契约为：
+
+```js
+{ id: '可选 ID', name: '歌名', artist: '歌手', album: '可空专辑',
+  duration: 255.333, quality: 'preview-aac', url: 'https://…' }
+```
+
+C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8/NUL/长度。id 最多 127 字节，name/artist/album 各 255，quality 127，url 2047；name/artist/quality/url 必填非空，album 可空/缺省，duration 为有限的 0..86400 秒。下载地址限定 HTTP(S)。`result.json` 保留 handler JSON（≤2 MiB），`info_json` 为首曲 `{type:quality,musicInfo:原始歌曲对象}`，后续可保留脚本扩展字段。musicUrl 校验 HTTP(S) 字符串；lyric 校验 `{lyric:string,…}`，空歌词合法。不是完整 LX 平台 musicInfo 转换层；标准源需要调用方提供平台自己的 id/hash/meta 等字段。
+
+资源上限：32 MiB JS 分配、512 KiB JS 栈；每 action 40 秒截止中断（在 JS/调度点检查）、32 个排队任务、256 个累计任务、16 次 HTTP；单请求与原始响应 ≤2 MiB。HTTP 总时限/取消不保证打断系统 DNS 或写 socket，且同步 HTTP 期间 JS timer 不运行，不能当成强沙箱或硬实时截止。HTTP/歌曲解析失败销毁本次上下文，下次自检重新开始，不改私有音源文件。
+
+### 兼容范围与验收入口
+兼容层支持 `on(request)`、`send(inited/updateAlert)`、request 回调与 cancel、setTimeout/clearTimeout、buffer.from/bufToString 的 utf8/hex/base64、Promise/async/await。body 对象转 JSON，form 转 URL 编码，qs 百分号编码；默认尝试 JSON 正文，不能解析时保留文本，json=true 则失败。crypto/zlib/Node/DOM/完整 Buffer/multipart/二进制等未实现，依赖它们的第三方源不能运行，见 DECISIONS.md。updateAlert 接受但不打开网页或展示升级弹窗。
+
+「搜索自检（love）」依次真实 search（page=1,limit=5）、首曲 musicUrl、lyric，每步独立上下文；成功显示首曲及数量，日志有首曲的歌名/歌手/专辑/时长/音质与地址存在性，不记录可能带密钥的完整 URL。失败可重复点击。官方 LX 源不宣告 search 时报告不支持，不调用未宣告 action；示例的 search/itunes/preview-aac 明确是本项目扩展。没有自由输入、多源聚合/结果列表或播放/缓存功能。
+
+### 本轮验证记录
+- `./scripts/build.sh` 成功，两个 ABI（arm64-v8a/x86_64）及 Kotlin 编译通过；保留原有非阻塞 NDK 路径 CXX5304 提示。未新增 Java 源码/测试用例。
+- 在 x86_64 `aosp_17` 模拟器覆盖安装；将仓库示例按既有私有存储格式加入验收设备（先备份原数据），冷启动经 C 解析恢复后，从音源管理按钮执行。没有使用静态伪造 HTTP 响应。
+- 真实查询 `https://itunes.apple.com/search` 的 love 返回 5 曲；首曲 `Love / Keyshia Cole / The Way It Is`，255.333 秒，`preview-aac`，存在 HTTPS previewUrl；musicUrl 的真实 HEAD 成功，lyric 返回 `{"lyric":""}`（12 JSON 字节）。buffer 的 UTF-8/base64 往返、初始化 setTimeout 和 Promise/async 同时经过此链路。
+- 关闭模拟器 Wi-Fi/移动数据后显示「无法连接音源服务器，请检查网络后重试」；重新联网并再次点击，同样返回 5 曲和两个 handler 成功，无 AndroidRuntime 崩溃。
+- 对已导入的真实 Tisfy 最小源执行自检，报告「音源未完成初始化或没有 request handler」，进程保持正常；没有假装所有 LX 源可搜索。只读审查后补充 base64 无 padding/URL-safe 兼容、QuickJS 数组异常三态与公共请求参数检查。
+- 最终构建覆盖安装后再次返回 5 曲和两个 handler 成功；自检前后私有音源文件 SHA-256 同为 `86fce0441f2674f562458e140caeb6e60b89b3a67efc55ee6cd6eb9ad251add9`。自写改动 `git diff --cached --check`（排除 vendor）通过；完整检查仅报告上游原有行尾空白，保留原始 vendor 便于校验。未修改 workflow、未创建标签/Release。

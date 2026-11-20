@@ -1,0 +1,2 @@
+/* CMake 从 lx_compat.js 生成；JS 逻辑保持为可读源码。 */
+static const char lx_compat[] = "@LX_COMPAT_C@";

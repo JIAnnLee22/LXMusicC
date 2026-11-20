@@ -1,4 +1,5 @@
 #include "source.h"
+#include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -20,6 +21,7 @@ static struct {
     char path[1024];
     SourceView view;
     SourceFetch fetch;
+    RuntimeHttp http;
     SourceWake wake;
     void *context;
 } service={.lock=PTHREAD_MUTEX_INITIALIZER,.cond=PTHREAD_COND_INITIALIZER};
@@ -157,6 +159,32 @@ static void change(Store *s,int action,uint32_t id,char *input,char error[256]) 
 end:
     free(added); free(before);
 }
+static bool cancelled(void *context) {
+    (void)context;
+    pthread_mutex_lock(&service.lock); bool stop=!service.running; pthread_mutex_unlock(&service.lock);
+    return stop;
+}
+static void selfcheck(Store *store,uint32_t id,char message[256]) {
+    Entry *entry=NULL;
+    for(int i=0;i<store->count;++i) if(store->entries[i].meta.id==id) entry=&store->entries[i];
+    if(!entry || !entry->meta.enabled) { snprintf(message,256,"请先启用音源再执行自检"); return; }
+    RuntimeResult *result=calloc(1,sizeof(*result)),*next=calloc(1,sizeof(*next));
+    if(!result || !next) { free(result); free(next); snprintf(message,256,"内存不足，请重试"); return; }
+    if(!runtime_call(entry->script,NULL,"search","{\"keyword\":\"love\",\"page\":1,\"limit\":5}",
+                     service.http,cancelled,service.context,result,message)) goto end;
+    if(!result->count) { snprintf(message,256,"真实搜索返回空数组，可再次自检重试"); goto end; }
+    SourceSong *song=&result->songs[0];
+    __android_log_print(ANDROID_LOG_INFO,"LXMusicC","runtime search: count=%d name=%s artist=%s album=%s duration=%.3f quality=%s httpUrl=%d",
+        result->count,song->name,song->artist,song->album,song->duration,song->quality,song->url[0]!=0);
+    if(!runtime_call(entry->script,NULL,"musicUrl",result->info_json,service.http,cancelled,service.context,next,message)) goto end;
+    runtime_result_free(next);
+    if(!runtime_call(entry->script,NULL,"lyric",result->info_json,service.http,cancelled,service.context,next,message)) goto end;
+    __android_log_print(ANDROID_LOG_INFO,"LXMusicC","runtime handlers: musicUrl OK, lyric OK (%zu JSON bytes)",strlen(next->json));
+    snprintf(message,256,"自检成功：%d 首 / 直链与歌词 handler 完成；首曲 %.60s / %.60s（详情见日志）",result->count,song->name,song->artist);
+end:
+    __android_log_print(ANDROID_LOG_INFO,"LXMusicC","runtime: %s",message);
+    runtime_result_free(result); runtime_result_free(next); free(result); free(next);
+}
 static void *worker(void *unused) {
     (void)unused;
     Store *store=calloc(1,sizeof(*store));
@@ -178,20 +206,21 @@ static void *worker(void *unused) {
         int action=service.action; uint32_t id=service.id; char *input=service.input;
         service.input=NULL; service.pending=false;
         pthread_mutex_unlock(&service.lock);
-        if(writable) change(store,action,id,input,error);
+        if(action==SOURCE_CHECK) selfcheck(store,id,error);
+        else if(writable) change(store,action,id,input,error);
         else snprintf(error,256,"音源存储损坏，未覆盖原文件；请备份后清除应用数据");
         free(input); publish(store,error);
     }
     for(int i=0;i<store->count;++i) free(store->entries[i].script);
     free(store); return NULL;
 }
-bool source_start(const char *directory,SourceFetch fetch,SourceWake wake,void *context) {
+bool source_start(const char *directory,SourceFetch fetch,RuntimeHttp http,SourceWake wake,void *context) {
     if(service.thread_started) return false;
     if(!directory || snprintf(service.path,sizeof(service.path),"%s/lx-sources-v1.bin",directory)>=(int)sizeof(service.path)) {
         source_message("私有存储路径不可用，请重启重试"); return false;
     }
     pthread_mutex_lock(&service.lock);
-    service.fetch=fetch; service.wake=wake; service.context=context;
+    service.fetch=fetch; service.http=http; service.wake=wake; service.context=context;
     memset(&service.view,0,sizeof(service.view)); service.view.revision=1; service.view.busy=true;
     service.running=true; service.pending=false; service.input=NULL;
     pthread_mutex_unlock(&service.lock);
@@ -207,7 +236,7 @@ void source_stop(void) {
     if(join) pthread_join(service.thread,NULL);
     pthread_mutex_lock(&service.lock);
     free(service.input); service.input=NULL; service.pending=false;
-    service.wake=NULL; service.context=NULL; service.fetch=NULL; service.thread_started=false;
+    service.wake=NULL; service.context=NULL; service.fetch=NULL; service.http=NULL; service.thread_started=false;
     pthread_mutex_unlock(&service.lock);
 }
 bool source_command(int action,uint32_t id,const char *input,size_t length) {
