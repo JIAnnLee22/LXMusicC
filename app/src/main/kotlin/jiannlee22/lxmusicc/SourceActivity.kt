@@ -36,6 +36,14 @@ class SourceActivity : NativeActivity() {
     /** C 工作线程调用；标准 UTF-8 JSON 字节，不使用 JNI modified UTF-8。 */
     fun requestRuntime(data: ByteArray): ByteArray = RuntimeHttp.execute(data) { closing }
 
+    /**
+     * 公共目录缓存桥：C 工作线程同步调用，IO 全部在本线程完成。
+     * 首字节 1 + UTF-8 正文（成功）或 0 + UTF-8 中文错误；cancelled 复用 closing。
+     */
+    fun requestCache(action: Int, url: ByteArray?, folder: ByteArray?, filename: ByteArray?,
+                     uri: ByteArray?, maxBytes: Long): ByteArray =
+        CacheStorage.execute(this, action, url, folder, filename, uri, maxBytes) { closing }
+
     fun requestRuntimeSearch(data: ByteArray, token: Long): ByteArray =
         RuntimeHttp.execute(data) { closing || nativeSearchCancelled(token) }
 

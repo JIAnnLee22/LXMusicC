@@ -1,5 +1,6 @@
 #include "playback.h"
 #include "playback_bridge.h"
+#include "cache.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,8 @@ static void apply(int action) {
 static void load(int index) {
     PlaybackView *v=&playback.view;
     v->index=index; v->current=playback.queue[index];
+    v->local_uri[0]=0;
+    cache_lookup(&v->current,v->local_uri);
     v->position=v->duration=0; v->state=2; v->playing=false;
     v->requested=true; v->error[0]=0; ++v->generation;
     apply(PLAYBACK_LOAD);
@@ -74,9 +77,14 @@ void playback_command(int action,int64_t position) {
             if(v->index>0) load(v->index-1);
             else { v->position=0; apply(PLAYBACK_SEEK); }
             break;
-        case PLAYBACK_PLAY:
+        case PLAYBACK_PLAY: {
+            char uri[CACHE_URI_BYTES]="";
+            cache_lookup(&v->current,uri);
+            bool changed=strcmp(uri,v->local_uri)!=0;
+            if(changed) snprintf(v->local_uri,sizeof(v->local_uri),"%s",uri);
             v->requested=true; v->error[0]=0;
-            if(!v->connected) { ++v->generation; publish(); }
+            if(changed && v->connected) { ++v->generation; apply(PLAYBACK_LOAD); }
+            else if(!v->connected) { ++v->generation; publish(); }
             else {
                 if(v->state==4 || (v->duration>0 && v->position>=v->duration-100)) {
                     v->position=0; apply(PLAYBACK_SEEK);
@@ -84,6 +92,7 @@ void playback_command(int action,int64_t position) {
                 apply(action);
             }
             break;
+        }
         case PLAYBACK_PAUSE: case PLAYBACK_STOP:
             v->requested=false; apply(action); break;
         case PLAYBACK_SEEK:

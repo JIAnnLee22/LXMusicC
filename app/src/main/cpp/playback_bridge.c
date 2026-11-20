@@ -39,7 +39,7 @@ bool playback_bridge_apply(int action,const PlaybackView *view) {
         if(clean(env) && frame==JNI_OK) {
             jbyteArray url=NULL,title=NULL,artist=NULL;
             if(action==PLAYBACK_LOAD) {
-                url=bytes(env,view->current.song.url);
+                url=bytes(env,view->local_uri[0]?view->local_uri:view->current.song.url);
                 title=bytes(env,view->current.song.name);
                 artist=bytes(env,view->current.song.artist);
             }

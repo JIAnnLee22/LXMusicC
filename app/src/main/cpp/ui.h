@@ -4,6 +4,7 @@
 #include "source.h"
 #include "search.h"
 #include "playback.h"
+#include "cache.h"
 #define UI_STATE_VERSION 1u
 typedef struct {
     unsigned version;
@@ -28,6 +29,9 @@ typedef struct {
     SearchView search;
     PlaybackView playback;
     bool playback_requested;
+    CacheView cache;
+    bool cache_open, cache_clear_confirm;
+    uint32_t cache_delete_id;
     char query[SEARCH_QUERY_BYTES];
     unsigned paste_revision;
     bool input_open, search_paste_requested;

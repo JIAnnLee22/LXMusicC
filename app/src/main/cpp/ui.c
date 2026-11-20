@@ -13,7 +13,8 @@ enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SOURCE_TOGGLE, ACT_SOURCE_DELETE, ACT_SOURCE_UP, ACT_SOURCE_DOWN, ACT_SOURCE_CHECK,
     ACT_SEARCH_INPUT, ACT_SEARCH_SUBMIT, ACT_SEARCH_PASTE, ACT_SEARCH_CANCEL,
     ACT_SEARCH_RETRY, ACT_SEARCH_PAGE, ACT_SEARCH_SELECT, ACT_SEARCH_KEY, ACT_SEARCH_CLOSE,
-    ACT_PLAYBACK, ACT_PLAYBACK_SEEK };
+    ACT_PLAYBACK, ACT_PLAYBACK_SEEK, ACT_CACHE_OPEN, ACT_CACHE_BACK, ACT_CACHE_DOWNLOAD,
+    ACT_CACHE_PAGE, ACT_CACHE_PLAY, ACT_CACHE_DELETE, ACT_CACHE_CLEAR, ACT_CACHE_LIMIT, ACT_CACHE_REFRESH };
 static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s);
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
@@ -218,8 +219,11 @@ static float player(Ui *u,Renderer *r,float x,float y,float w) {
         fitted(r,dx+12,dy+246,dw-24,12,ACCENT,status);
         char info[320]; snprintf(info,sizeof(info),"%d / %d  %s",p->index+1,p->count,p->current.source_name);
         fitted(r,dx+12,dy+266,dw-24,11,MUTED,info);
+        button(u,r,(Rect){dx,dy+282,(dw-8)/2,36},u->cache.busy?"缓存处理中…":"缓存当前歌曲",ACT_CACHE_DOWNLOAD,0,false);
+        button(u,r,(Rect){dx+(dw+8)/2,dy+282,(dw-8)/2,36},p->local_uri[0]?"离线播放 / 管理":"缓存管理",ACT_CACHE_OPEN,0,false);
+        fitted(r,dx+4,dy+340,dw-8,12,ACCENT,u->cache.message);
     } else button(u,r,(Rect){dx+(dw-148)/2,dy+144,148,44},"前往搜索",ACT_TAB,1,true);
-    return fmaxf(y+cover,dy+286)-start+20;
+    return fmaxf(y+cover,dy+(p->count?354:286))-start+20;
 }
 
 // UTF-8 按可用宽度换行，外部元数据不参与格式化或执行。
@@ -285,15 +289,56 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     }
     return y-start;
 }
+static float caches(Ui *u,Renderer *r,float x,float y,float w) {
+    float start=y; CacheView *v=&u->cache;
+    button(u,r,(Rect){x,y,88,36},"返回设置",ACT_CACHE_BACK,0,false);
+    button(u,r,(Rect){x+100,y,w-100,36},v->busy?"处理中…":"检查文件",ACT_CACHE_REFRESH,0,false); y+=48;
+    char stats[128]; snprintf(stats,sizeof(stats),"%d 首 / %.1f MiB / 上限 %llu MiB",v->total,
+        (double)v->bytes/CACHE_MIB,(unsigned long long)(v->limit/CACHE_MIB));
+    y=wrapped(r,x,y,w,14,TEXT,stats);
+    y=wrapped(r,x,y+6,w,12,ACCENT,v->message); y+=14;
+    y=wrapped(r,x,y,w,12,MUTED,"Music/LXMusicC/音源/歌手 - 歌名；点击歌曲离线播放"); y+=12;
+    const int limits[]={256,512,1024,2048}; float bw=(w-18)/4;
+    for(int i=0;i<4;++i) {
+        char label[24]; snprintf(label,sizeof(label),"%d MiB",limits[i]);
+        button(u,r,(Rect){x+i*(bw+6),y,bw,34},label,ACT_CACHE_LIMIT,limits[i],v->limit==(uint64_t)limits[i]*CACHE_MIB);
+    }
+    y+=44;
+    button(u,r,(Rect){x,y,w,34},u->cache_clear_confirm?"确认清空全部缓存":"清空缓存",ACT_CACHE_CLEAR,0,false); y+=46;
+    if(!v->total) {
+        render_rect(r,(Rect){x,y,w,92},16,CARD);
+        center(r,(Rect){x,y+10,w,32},18,TEXT,"暂无离线缓存");
+        center(r,(Rect){x,y+47,w,28},12,MUTED,"先搜索播放，再点击缓存当前歌曲");
+        return y+110-start;
+    }
+    snprintf(stats,sizeof(stats),"第 %d / %d 页",v->page+1,(v->total+CACHE_PAGE_SIZE-1)/CACHE_PAGE_SIZE);
+    text(r,x,y+17,13,TEXT,stats); y+=28;
+    button(u,r,(Rect){x,y,(w-10)/2,32},"上一页",ACT_CACHE_PAGE,-1,false);
+    button(u,r,(Rect){x+(w+10)/2,y,(w-10)/2,32},"下一页",ACT_CACHE_PAGE,1,false); y+=44;
+    for(int i=0;i<v->count;++i) {
+        CacheEntry *e=&v->items[i];
+        Rect card={x,y,w,104}; render_rect(r,card,14,CARD);
+        hit(u,card,ACT_CACHE_PLAY,i);
+        fitted(r,x+12,y+26,w-24,16,TEXT,e->item.song.name);
+        fitted(r,x+12,y+49,w-24,12,MUTED,e->item.song.artist);
+        snprintf(stats,sizeof(stats),"%.2f MiB · %s",(double)e->bytes/CACHE_MIB,e->item.song.quality);
+        fitted(r,x+12,y+78,w-108,11,ACCENT,stats);
+        button(u,r,(Rect){x+w-88,y+62,76,30},u->cache_delete_id==e->id?"确认删除":"删除",ACT_CACHE_DELETE,(int)e->id,false);
+        y+=114;
+    }
+    return y-start+10;
+}
 static float settings(Ui *u,Renderer *r,float x,float y,float w) {
+    if(u->cache_open) return caches(u,r,x,y,w);
     if(u->source_open) return sources(u,r,x,y,w);
     float start=y;
     render_rect(r,(Rect){x,y,w,90},20,TINT);
     text(r,x+18,y+34,20,TEXT,"LX Music C"); text(r,x+18,y+63,13,ACCENT,"0.1.0  /  音源管理"); y+=112;
     const char *titles[]={"音源管理","缓存管理","仅 Wi-Fi 下载","主题外观","后台播放","数据与隐私","关于"};
     char source_count[64]; snprintf(source_count,sizeof(source_count),"%d 个音源 / 点击管理",u->sources.count);
-    const char *values[]={source_count,"暂无缓存","尚未开放","深色 / 薄荷绿","尚未开放","本地优先","音源导入"};
-    const char *details[]={"粘贴导入与音源管理","公共音乐目录缓存将在后续开放","下载功能尚未开放","当前提供固定深色主题","播放服务与通知将在后续开放","导入不执行；搜索与自检运行可信音源并联网","纯 C 界面 · Android 8.0 及以上"};
+    char cache_count[80]; snprintf(cache_count,sizeof(cache_count),"%d 首 / %.1f MiB / 点击管理",u->cache.total,(double)u->cache.bytes/CACHE_MIB);
+    const char *values[]={source_count,cache_count,"尚未开放","深色 / 薄荷绿","播放服务与通知","本地优先","音源导入"};
+    const char *details[]={"粘贴导入与音源管理","公共 Music 目录 / 离线播放","仅 Wi-Fi 限制尚未开放","当前提供固定深色主题","支持通知栏、锁屏与耳机控制","导入不执行；搜索与自检运行可信音源并联网","纯 C 界面 · Android 8.0 及以上"};
     for(int i=0;i<7;++i) {
         bool selected=u->state.settings_row==i;
         float h=selected?112:78;
@@ -301,7 +346,7 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
         text(r,x+16,y+29,16,TEXT,titles[i]); text(r,x+16,y+55,12,MUTED,values[i]);
         text(r,x+w-28,y+41,18,ACCENT,selected?"-":"+");
         if(selected) text(r,x+16,y+89,12,ACCENT,details[i]);
-        hit(u,(Rect){x,y,w,h},i==0?ACT_SOURCE_OPEN:ACT_SETTING,i); y+=h+10;
+        hit(u,(Rect){x,y,w,h},i==0?ACT_SOURCE_OPEN:i==1?ACT_CACHE_OPEN:ACT_SETTING,i); y+=h+10;
     }
     return y-start+12;
 }
@@ -389,13 +434,15 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
         bool nav=h.rect.y>=u->area.y+u->area.h-68;
         if(!nav && (!inside(u->body,x,y)||!inside(u->body,u->down_x,u->down_y))) continue;
         if(h.action!=ACT_SOURCE_DELETE) u->delete_id=0;
+        if(h.action!=ACT_CACHE_DELETE) u->cache_delete_id=0;
+        if(h.action!=ACT_CACHE_CLEAR) u->cache_clear_confirm=false;
         switch(h.action) {
             case ACT_TAB: u->state.tab=h.value; u->velocity=0; break;
             case ACT_FILTER: u->state.library_filter=h.value; break;
             case ACT_CHIP: u->state.search_chip=u->state.search_chip==h.value?-1:h.value; break;
             case ACT_SETTING: u->state.settings_row=u->state.settings_row==h.value?-1:h.value; break;
             case ACT_NOTICE: notice(u,h.value?"搜索输入将在后续开放":"音乐库功能将在后续开放",now); break;
-            case ACT_SOURCE_OPEN: u->state.tab=3; u->source_open=true; u->state.scroll[3]=0; u->delete_id=0; break;
+            case ACT_SOURCE_OPEN: u->state.tab=3; u->cache_open=false; u->source_open=true; u->state.scroll[3]=0; u->delete_id=0; break;
             case ACT_SEARCH_INPUT: u->input_open=!u->input_open; u->state.scroll[1]=0; break;
             case ACT_SEARCH_SUBMIT: submit(u,now); break;
             case ACT_SEARCH_PASTE: u->search_paste_requested=true; break;
@@ -414,6 +461,37 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
                         playback_view(&u->playback);
                         u->state.tab=2; u->state.scroll[2]=0; u->velocity=0;
                     } else notice(u,"无法创建播放队列，请重试",now);
+                }
+                break;
+            case ACT_CACHE_OPEN:
+                u->state.tab=3; u->source_open=false; u->cache_open=true; u->state.scroll[3]=0; u->velocity=0; break;
+            case ACT_CACHE_BACK: u->cache_open=false; u->state.scroll[3]=0; break;
+            case ACT_CACHE_DOWNLOAD:
+                if(!cache_command(CACHE_DOWNLOAD,&u->playback.current,0,0)) notice(u,"缓存忙碌，请稍后重试",now);
+                break;
+            case ACT_CACHE_REFRESH:
+                if(!cache_command(CACHE_REFRESH,NULL,0,0)) notice(u,"缓存忙碌，请稍后重试",now);
+                break;
+            case ACT_CACHE_PAGE: cache_page(h.value); u->state.scroll[3]=0; u->velocity=0; break;
+            case ACT_CACHE_LIMIT:
+                if(!cache_command(CACHE_SET_LIMIT,NULL,0,(uint64_t)h.value*CACHE_MIB)) notice(u,"缓存忙碌，请稍后重试",now);
+                break;
+            case ACT_CACHE_CLEAR:
+                if(u->cache_clear_confirm) {
+                    if(!cache_command(CACHE_CLEAR,NULL,0,0)) notice(u,"缓存忙碌，请稍后重试",now);
+                    u->cache_clear_confirm=false;
+                } else u->cache_clear_confirm=true;
+                break;
+            case ACT_CACHE_DELETE:
+                if(u->cache_delete_id==(uint32_t)h.value) {
+                    if(!cache_command(CACHE_DELETE,NULL,(uint32_t)h.value,0)) notice(u,"缓存忙碌，请稍后重试",now);
+                    u->cache_delete_id=0;
+                } else u->cache_delete_id=(uint32_t)h.value;
+                break;
+            case ACT_CACHE_PLAY:
+                if(h.value>=0 && h.value<u->cache.count && playback_replace(&u->cache.items[h.value].item,1,0)) {
+                    u->playback_requested=true; playback_view(&u->playback);
+                    u->state.tab=2; u->state.scroll[2]=0; u->velocity=0;
                 }
                 break;
             case ACT_PLAYBACK:
@@ -443,6 +521,9 @@ bool ui_back(Ui *u) {
     if(u->toast_until>0) { u->toast_until=0; return true; }
     if(u->state.tab==1 && u->input_open) { u->input_open=false; return true; }
     if(u->state.tab==1 && u->search.busy) { search_cancel(); return true; }
+    if(u->state.tab==3 && u->cache_open) {
+        u->cache_open=false; u->cache_clear_confirm=false; u->cache_delete_id=0; u->state.scroll[3]=0; return true;
+    }
     if(u->state.tab==3 && u->source_open) { u->source_open=false; u->state.scroll[3]=0; return true; }
     if(u->state.tab==3 && u->state.settings_row>=0) { u->state.settings_row=-1; return true; }
     if(u->state.tab!=0) { u->state.tab=0; return true; }

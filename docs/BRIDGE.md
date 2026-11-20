@@ -84,3 +84,24 @@ C 的 `playback_bridge_start/apply` 检查 attach/GetObjectClass/GetMethodID/Glo
 播放快照/队列用独立 playback.lock；进度回调只有内容变化才发布。UI 订阅的 ALooper 在锁内 acquire/release，Activity 暂停或退出解除订阅，不让息屏回调唤醒 GL 线程；恢复重新订阅并读取最新快照。服务不持有 Activity，Activity 的 closing、HTTP 取消和 source/search_stop 均不停止播放。进程死亡不恢复队列，也不从后台擅自重启播放。
 
 Media3 负责系统音频焦点与 noisy（拔耳机）处理；瞬态焦点丢失暂停、恢复后继续，永久丢失后手动播放。前台提升失败由 MediaSessionService.Listener 转为暂停和可读错误。媒体会话通知豁免 Android 13 POST_NOTIFICATIONS 运行时授权，因此不请求无关通知权限；服务声明 mediaPlayback 类型及对应前台权限、WAKE_LOCK。外部媒体控制可控制播放/seek/切歌，但不能替换或修改 C 队列。
+
+## 公共目录缓存（06-cache）
+
+实现：`cache_bridge.[ch]` → `SourceActivity.kt` → `CacheStorage.kt`。没有新增 Java→C 回调；权限提示仅投递主线程，授权后用户再次点击缓存。
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| C → SourceActivity | `requestCache` | `(I[B[B[B[BJ)[B` | 仅缓存 C 工作线程，同步系统 IO | action、url、folder、filename、uri、maxBytes；四个可空 ByteArray 都是标准 UTF-8。返回非 null ByteArray，首字节 1 成功、0 失败，余下为 UTF-8；失败为可读错误 |
+
+- **action=1 下载**：url/folder/filename 非空，uri=null；maxBytes 是 C 计算的剩余配额，Kotlin 在声明长度检查和每次写块前强制限制，并另限单曲 2 GiB。成功正文为十进制实际字节数 + `\n` + MediaStore 返回的 `content://media/...` URI，无尾换行；不把音频内容带回 JNI。
+- **action=2 探测**：只需 uri，实际打开只读文件描述符查询 statSize，而不是信任过期的 SIZE 列；成功正文同下载。协议中的固定错误 **`缓存文件不存在`** 表示丢失/零长，C 可移除索引并重新下载；权限不足或临时访问失败用不同错误，C 保留索引，禁止盲目重下。修改此固定文案必须两端同步。
+- **action=3 删除**：只需 uri；成功正文任意，不存在也成功；失败不移除 C 索引。API26–28 查询 DATA 并兜底删除真实文件；权限不足不弹越权删除授权 UI。
+- **action=4 清理**：不需数组参数；删除本包在 `Music/LXMusicC/` 下的 pending 条目，并尽力删除超过十分钟的 `.part`；成功正文任意。仅后台启动时调用，不扫描导入其他音乐。
+
+C 包装 `cache_bridge_io` 检查 GetEnv/attach、局部帧、类/方法查找、数组创建/写入/调用/长度/读取的异常与返回值；清异常并记录 LXMusicC。响应最多 1023 字节，检查 UTF-8、大小范围、数字分隔与 URI 前缀/长度；数组局部帧结束释放，线程退出 detach。歌名/路径不经 modified UTF-8；路径段清理与扩展名推断由 C 执行。
+
+API29+ 使用 Audio MediaStore、RELATIVE_PATH 与 IS_PENDING：先创建、流式写、关闭流，再解除 pending。失败删除半成品。API26–28 仅按需申请 `WRITE_EXTERNAL_STORAGE`（manifest maxSdkVersion=28），先写 `.part`、改名、登记 DATA，返回的依然是 content URI；没有 READ_MEDIA_AUDIO、所有文件权限或 Kotlin UI。
+
+下载采用系统 HttpURLConnection，32 KiB 分块；仅 HTTP(S)、禁止凭据和 HTTPS 降级、最多五跳、必须 HTTP200、拒绝常见 HTML/XML/JSON 错误页、空文件及 Content-Length 不完整响应。连接15秒/单次读10秒、复制总时限10分钟（检查点生效）；DNS/阻塞底层调用仍非硬截止。Activity closing 在读块/重定向等检查点取消；退出先 `cancelSourceFetch` 置位，再 `cache_stop` join，之后才释放 Activity。未完成下载不跨 Activity 继续，不影响独立播放服务。
+
+既有 `applyPlayback(I[B[B[BJJZ)Z` 签名不变：C 命中索引时 URL 字节数组改为 content URI，服务和 Media3 负责后台读取/解码，不在 JNI 调用线程打开文件。

@@ -3,6 +3,7 @@
 #include "ui.h"
 #include "platform.h"
 #include "source_bridge.h"
+#include "cache_bridge.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/keycodes.h>
@@ -224,6 +225,7 @@ void android_main(struct android_app *app) {
     playback_view(&e.ui.playback);
     bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
     bool search_started=search_start(source_bridge_search_http,source_wake,app->activity);
+    bool cache_started=cache_start(app->activity->internalDataPath,cache_bridge_io,source_wake,app->activity);
     double previous=seconds();
     while(!app->destroyRequested) {
         int status=atomic_load_explicit(&e.font_status,memory_order_acquire);
@@ -240,6 +242,7 @@ void android_main(struct android_app *app) {
         if(app->destroyRequested) break;
         if(playback_view(&e.ui.playback)) e.dirty=true;
         if(e.ui.playback_requested) { e.ui.playback_requested=false; playback_ensure(app->activity); }
+        if(cache_view(&e.ui.cache)) e.dirty=true;
         if(source_view(&e.ui.sources)) e.dirty=true;
         if(search_view(&e.ui.search)) { ui_search_sync(&e.ui); e.dirty=true; }
         if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity,false); }
@@ -254,6 +257,7 @@ void android_main(struct android_app *app) {
     }
     playback_ui(NULL); // 只解除 UI 订阅，进程级队列与前台服务继续播放。
     source_bridge_cancel(app->activity);
+    if(cache_started) cache_stop();
     if(search_started) search_stop();
     if(sources_started) source_stop();
     engine_destroy(&e); pthread_join(e.loader,NULL); free(e.atlas);

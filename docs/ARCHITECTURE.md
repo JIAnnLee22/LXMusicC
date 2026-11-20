@@ -174,3 +174,34 @@ C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8
 - HOME、息屏后系统会话保持 PLAYING、进度继续；GSM 来电及 accept 后变为 PAUSED，position=18163 ms 保持，cancel 后恢复 PLAYING、position=18179 ms。通知卡片实际点击暂停/下一首有效，元数据从 Lana Del Rey 变为 Destiny's Child；系统媒体键 play/pause/next/headsethook 同样有效。
 - 返回退出 Activity 后日志出现 native activity finished，服务/会话仍在；耳机键恢复后重启 Activity，C 页恢复 Destiny's Child、4/8 及实时进度。暂停时 C seek 将 28383→30023 ms（时长夹取），后退变为 20023 ms；切至末曲及末尾 seek 后按钮可恢复播放，不回到队列头。
 - 关闭 Wi-Fi/移动数据后切新曲显示 ERROR_CODE_IO_NETWORK_CONNECTION_FAILED 与可读重试提示；恢复网络后 play 重新 prepare 并播放同曲。未修改模拟器音源文件，未以本地假响应冒充真实网络；未修改工作流或创建发布标签。
+
+## 06-cache：公共目录缓存与离线播放
+
+| 模块 | 职责 |
+| --- | --- |
+| `cache.[ch]` | C 单工作线程/单槽命令、去重索引、原子持久化、容量限制、六项分页快照、内存播放查找 |
+| `cache_bridge.[ch]` | 安全路径段、扩展名选择、JNI 有界 UTF-8 字节协议与异常检查 |
+| `CacheStorage.kt` / `SourceActivity.kt` | 系统 HTTP 流式传输、MediaStore 公共目录 IO、旧系统存储授权；无 UI 或缓存策略 |
+| `playback.[ch]` / `playback_bridge.c` | 保留原始远程地址，另存本地 URI；加载与继续播放时优先缓存，不改服务 JNI 协议 |
+| `ui.[ch]` / `main.c` | 显式缓存当前曲目、缓存管理、占用/上限、二次确认删除/清空、启动/取消/join |
+
+### 数据、线程与播放
+- C worker 独占 Store；GL/系统回调仅提交内存命令、分页和读快照。下载、探测、删除、启动加载、fsync/rename 都在 worker，不持 cache.lock 做 IO。忙碌时拒绝新命令，不排无界下载队列；无缓存时明确显示引导。wake 回调只允许 ALooper_wake，不得重入 C 锁。
+- 查找按来源 ID/来源名/音质 + 非空歌曲 ID；无 ID 时按歌名/歌手/专辑/相近时长。URL 不作身份键，签名 URL 变化不重复下载；不同来源、不同音质分开保留。成功条目包括完整 SearchItem、URI、实际大小、单调 ID，最多512条；下载前探测同曲已有 URI，存在即返回，不发 HTTP。
+- 默认1024 MiB；提供256/512/1024/2048 MiB，低于已用空间的设置拒绝。按实际下载字节和剩余配额强制中断，不自动驱逐旧曲；单曲另限2 GiB。检查文件/启动探测剔除已丢失文件，更新外部改写后的大小；如果外部增大导致超额则暂停新增下载，仍可播放/删除。
+- `cache.lock` 保护独立查找表与当前六项快照，内存上限约2 MiB/表；Store 加查找表合计约4 MiB，UI只复制一页。worker 发布时才更新表，播放加载在 playback.lock 内查询 cache.lock；缓存模块不回调播放，不产生反向锁序。下载缓冲32 KiB，不将整曲放进堆或JNI数组。
+- 播放队列保留远程 SearchItem，PlaybackView.local_uri 单独记录本地输出；load 优先本地 URI，暂停后继续若查找结果变化则以原位置重新LOAD。缓存页可冷启动直接选曲，无需网络搜索或启用原音源。Media3 内部线程读取 content URI，可 seek/后台播放；不存在、权限/解码失败沿用可读重试状态。
+- Activity 结束先设置 Kotlin closing、join缓存线程，释放Store，但保留有界内存查找表供独立服务后台切歌。重新进入后worker从磁盘刷新；服务无 Activity 引用。删除正在播放的文件不主动停止音频，已打开的FD可能继续播放，也可能在后续seek失败；用户可重新选曲。
+
+### 持久化和公共文件
+- 私有文件 `internalDataPath/lx-cache-v1.bin`：magic `LXCC 01 00 00 00`、u32记录长度/u32数量/u32 next_id/u64上限，然后按顺序存记录。当前arm64-v8a/x86_64都是小端64位ABI，记录3880字节；校验记录长度、计数、字符串边界/UTF-8、URI、大小、ID/身份唯一性。未来更改结构须迁移版本，不能默默重解释。
+- 保存到0600同目录tmp，fflush/fsync/close后rename；损坏索引只读保护，不覆盖公共文件。下载完成后保存索引，失败删除新文件并回滚；单条删除先删公共文件再存索引，清空每16条和结尾保存。若删除后进程中断，下一次启动探测可修复过期索引。
+- 公共路径 `Music/LXMusicC/<音源>/<歌手> - <歌名>.<ext>`。C按UTF-8边界缩短路径段，替换控制符、分隔符和非法字符，扩展名优先URL后缀，再按音质判断，未知默认m4a；不信任外部元数据作为路径。系统MediaStore/旧系统数字后缀避让同名文件，不覆盖其它歌曲。
+- MediaStore与C索引不是跨进程原子事务：在公共文件发布到索引rename的极短窗口被强杀，可能留下未索引的完整公共音频；不猜测并删除已发布文件。pending/旧part启动清理，普通失败即时回收。清除数据/卸载后不扫描重建旧公共文件，不申请额外读取权限，用户可用文件管理器管理残留文件。完整JNI和旧系统授权路径见 BRIDGE.md。
+
+### 本轮验证记录
+- `./scripts/build.sh` 成功（arm64-v8a/x86_64、Kotlin）；无新增测试用例、Java源码或依赖SDK，保留既有非阻塞CXX5304提示。
+- `aosp_17` x86_64模拟器实际API37，真实Apple预览音频下载：`Music/LXMusicC/iTunes 公开预览示例/Keyshia Cole - Love.m4a`，995863字节。系统Files应用可浏览Music/LXMusicC/音源目录并显示音频；MediaStore查询显示`is_pending=0`、`_size=995863`。
+- 关闭Wi-Fi/移动数据，force-stop冷启动，从缓存列表选择Love/Keyshia Cole；`dumpsys connectivity`显示`Active default network: none`，系统媒体会话为`PLAYING(3)`，界面显示离线播放、实际0:30时长及进度。不是依靠在线播放器内存缓冲验收。
+- 断网重复缓存仍只有一个公共文件，提示不会重复下载。单条二次确认删除、重新下载后二次确认清空均令公共文件数归零并显示空状态；上限从1024改512 MiB，强制停止后C索引和界面仍为512 MiB。验收结束恢复网络，保留一个可用缓存，不改原音源数据。
+- API26–28权限/legacy目录分支未实机验证；不宣称所有ROM均已验证。没有开始07及以后条目；工作流/版本保持不变，不创建标签或Release。

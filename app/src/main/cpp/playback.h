@@ -14,6 +14,7 @@ typedef struct {
     uint64_t generation;
     unsigned revision;
     char error[256];
+    char local_uri[512];
 } PlaybackView;
 /* 进程级队列不借用 Activity；仅 looper 在 UI 生存期间 acquire/release。 */
 void playback_ui(ALooper *looper);
