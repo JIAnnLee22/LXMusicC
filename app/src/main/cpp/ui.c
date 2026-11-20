@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "player_ui.h"
+#include "library_ui.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,7 +9,6 @@ static const Color TEXT={.90f,.93f,.97f,1}, MUTED={.53f,.60f,.68f,1};
 static const Color CARD={.075f,.094f,.12f,1}, LINE={.13f,.17f,.21f,1};
 static const Color ACCENT={.34f,.88f,.72f,1}, TINT={.08f,.20f,.19f,1};
 static const char *TABS[]={"歌曲","搜索","正在播放","设置"};
-static const char *FILTERS[]={"收藏","最近播放","我的歌单"};
 enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SOURCE_OPEN, ACT_SOURCE_BACK, ACT_SOURCE_PASTE, ACT_SOURCE_PAGE,
     ACT_SOURCE_TOGGLE, ACT_SOURCE_DELETE, ACT_SOURCE_UP, ACT_SOURCE_DOWN, ACT_SOURCE_CHECK,
@@ -48,40 +48,13 @@ void ui_init(Ui *u,const UiState *saved) {
         u->state.settings_row=(int)clamp(u->state.settings_row,-1,6);
         for(int i=0;i<4;++i) if(!isfinite(u->state.scroll[i]) || u->state.scroll[i]<0) u->state.scroll[i]=0;
     }
+    u->library_id=u->state.library_filter==2?-1:u->state.library_filter;
 }
 void ui_cancel(Ui *u) { u->pressed=u->dragging=u->seeking=false; u->velocity=0; u->pointer=-1; }
 void ui_layout(Ui *u,Rect area) {
     u->area=area;
     float header=area.h<380?66:92;
     u->body=(Rect){area.x+20,area.y+header,area.w-40,fmaxf(0,area.h-header-76)};
-}
-
-static float library(Ui *u,Renderer *r,float x,float y,float w) {
-    float start=y, gap=8, fw=(w-2*gap)/3;
-    for(int i=0;i<3;++i) {
-        Rect b={x+i*(fw+gap),y,fw,42}; bool active=u->state.library_filter==i;
-        render_rect(r,b,13,active?TINT:CARD); center(r,b,13,active?ACCENT:MUTED,FILTERS[i]);
-        hit(u,b,ACT_FILTER,i);
-    }
-    y+=62;
-    render_rect(r,(Rect){x,y,w,178},20,CARD);
-    render_rect(r,(Rect){x+20,y+20,44,44},14,TINT); center(r,(Rect){x+20,y+20,44,44},24,ACCENT,"♪");
-    const char *titles[]={"把喜欢的音乐留在这里","还没有播放记录","你的第一张歌单"};
-    text(r,x+20,y+92,20,TEXT,titles[u->state.library_filter]);
-    text(r,x+20,y+119,13,MUTED,"当前没有歌曲，先从音源开始");
-    button(u,r,(Rect){x+20,y+135,128,32},"前往设置",ACT_TAB,3,false);
-    y+=204;
-    text(r,x,y+16,17,TEXT,"开始聆听"); y+=34;
-    const char *names[]={"添加音乐来源","发现喜欢的歌曲","建立你的音乐库"};
-    const char *descs[]={"在设置中查看音源入口","搜索歌名、歌手或专辑","收藏、历史与歌单尚未开放"};
-    for(int i=0;i<3;++i) {
-        render_rect(r,(Rect){x,y,w,76},16,CARD);
-        char number[4]; snprintf(number,sizeof(number),"0%d",i+1);
-        text(r,x+16,y+32,16,ACCENT,number); text(r,x+50,y+29,15,TEXT,names[i]);
-        text(r,x+50,y+53,12,MUTED,descs[i]);
-        hit(u,(Rect){x,y,w,76},i==0?ACT_TAB:i==1?ACT_TAB:ACT_NOTICE,i==0?3:i==1?1:0); y+=88;
-    }
-    return y-start+8;
 }
 
 /* 外部歌名仅在可用宽度内显示，不能画到按钮/安全区之外。 */
@@ -320,9 +293,11 @@ void ui_draw(Ui *u,Renderer *r,double now) {
     render_clip(r,u->body);
     float extent=0,y=b.y-*scroll;
     switch(u->state.tab) {
-        case 0: extent=library(u,r,b.x,y,b.w); break;
+        case 0: extent=ui_library_draw(u,r,b.x,y,b.w); break;
         case 1: extent=search(u,r,b.x,y,b.w); break;
-        case 2: extent=ui_player_draw(u,r,b.x,y,b.w); break;
+        case 2:
+            extent=ui_player_draw(u,r,b.x,y,b.w);
+            extent+=ui_library_player(u,r,b.x,y+extent,b.w); break;
         case 3: extent=settings(u,r,b.x,y,b.w); break;
     }
     u->max_scroll[u->state.tab]=fmaxf(0,extent-b.h);
@@ -406,6 +381,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
         if(h.action!=ACT_CACHE_DELETE) u->cache_delete_id=0;
         if(h.action!=ACT_CACHE_CLEAR) u->cache_clear_confirm=false;
         if(h.action>=PLAYER_TOGGLE_QUEUE) { ui_player_action(u,h.action,h.value); break; }
+        if(h.action>=LIBUI_FILTER) { ui_library_action(u,h.action,h.value,now); break; }
         switch(h.action) {
             case ACT_TAB: u->state.tab=h.value; u->velocity=0; break;
             case ACT_FILTER: u->state.library_filter=h.value; break;
@@ -492,6 +468,7 @@ bool ui_back(Ui *u) {
     if(u->state.tab==2 && u->queue_open) {
         ui_player_action(u,PLAYER_TOGGLE_QUEUE,0); return true;
     }
+    if(ui_library_back(u)) return true;
     if(u->state.tab==1 && u->input_open) { u->input_open=false; return true; }
     if(u->state.tab==1 && u->search.busy) { search_cancel(); return true; }
     if(u->state.tab==3 && u->cache_open) {

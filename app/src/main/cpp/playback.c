@@ -1,6 +1,7 @@
 #include "playback.h"
 #include "playback_bridge.h"
 #include "cache.h"
+#include "library.h"
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,7 +21,7 @@ static struct {
  * history[0..history_at] 是当前曲目之前走过的随机路径，history_at 之后是被改写前丢弃的旧路径。 */
 static int shuffle_history[SEARCH_RESULT_LIMIT];
 static int history_len, history_at;
-static uint64_t shuffle_seed;
+static uint64_t shuffle_seed, recorded_generation;
 
 static void history_reset(int index) {
     shuffle_history[0]=index; history_len=1; history_at=0;
@@ -237,6 +238,9 @@ void playback_state(uint64_t generation,int state,bool playing,bool requested,
                     int64_t position,int64_t duration,const char *error) {
     pthread_mutex_lock(&playback.lock);
     PlaybackView *v=&playback.view;
+    if(generation==v->generation && v->connected && state==3 && playing && recorded_generation!=generation) {
+        if(library_record(&v->current)) recorded_generation=generation;
+    }
     if(generation==v->generation && v->connected &&
        (v->state!=state || v->playing!=playing || v->requested!=requested ||
         v->position!=position || v->duration!=duration || strcmp(v->error,error?error:""))) {

@@ -5,6 +5,7 @@
 #include "search.h"
 #include "playback.h"
 #include "cache.h"
+#include "library.h"
 #define UI_STATE_VERSION 1u
 typedef struct {
     unsigned version;
@@ -36,6 +37,14 @@ typedef struct {
     uint64_t seek_generation, player_generation;
     double shown_position;
     float player_appear, cover_fade, queue_mix;
+    LibraryView library;
+    int library_id,library_page,library_input,library_paste_target;
+    unsigned library_paste_revision,library_request;
+    uint32_t library_confirm;
+    int library_confirm_action;
+    bool library_adding,library_paste_requested;
+    SearchItem library_candidate;
+    char library_query[256],library_name[256];
     CacheView cache;
     bool cache_open, cache_clear_confirm;
     uint32_t cache_delete_id;

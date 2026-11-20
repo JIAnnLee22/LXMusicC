@@ -3,7 +3,8 @@
 #include <android/native_activity.h>
 #include <stdbool.h>
 #include <stdint.h>
-bool source_bridge_paste(ANativeActivity *activity,bool search);
+/* target: 0 音源，1 网络搜索，2 音乐库；复用系统剪贴板JNI。 */
+bool source_bridge_paste(ANativeActivity *activity,int target);
 void source_bridge_cancel(ANativeActivity *activity);
 /* SourceFetch 回调；context 是 ANativeActivity。仅工作线程调用。 */
 char *source_bridge_fetch(void *context,const char *url,char error[256]);

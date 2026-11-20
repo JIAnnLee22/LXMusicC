@@ -1,6 +1,8 @@
 #include "source_bridge.h"
 #include "source.h"
 #include "search.h"
+#include "library.h"
+#include <stdatomic.h>
 #include <android/log.h>
 #include <jni.h>
 #include <stdio.h>
@@ -21,7 +23,18 @@ static JNIEnv *attach(ANativeActivity *activity,bool *detach) {
     } else if(result!=JNI_OK) return NULL;
     return env;
 }
-bool source_bridge_paste(ANativeActivity *activity,bool search_input) {
+static atomic_int paste_target=-1;
+static void paste_error(int target,const char *message) {
+    if(target==2) library_paste(NULL,0,message);
+    else if(target==1) search_paste(NULL,0,message);
+    else source_message(message);
+}
+bool source_bridge_paste(ANativeActivity *activity,int target) {
+    int expected=-1;
+    if(!atomic_compare_exchange_strong(&paste_target,&expected,target)) {
+        paste_error(target,"剪贴板正在读取，请稍后重试"); return false;
+    }
+    bool search_input=target!=0;
     bool detach,ok=false; JNIEnv *env=attach(activity,&detach);
     if(!env) goto fail;
     if((*env)->PushLocalFrame(env,4)<0) { checked(env); goto end; }
@@ -37,12 +50,13 @@ end:
     if(detach) (*activity->vm)->DetachCurrentThread(activity->vm);
 fail:
     if(!ok) {
-        if(search_input) search_paste(NULL,0,"无法读取剪贴板，请重试");
-        else source_message("无法读取剪贴板，请重试");
+        atomic_store(&paste_target,-1);
+        paste_error(target,"无法读取剪贴板，请重试");
     }
     return ok;
 }
 void source_bridge_cancel(ANativeActivity *activity) {
+    atomic_store(&paste_target,-1);
     bool detach; JNIEnv *env=attach(activity,&detach);
     if(!env) return;
     if((*env)->PushLocalFrame(env,4)<0) { checked(env); goto end; }
@@ -134,28 +148,28 @@ char *source_bridge_search_http(void *context,const char *request,uint64_t token
 JNIEXPORT jboolean JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativeSearchCancelled(JNIEnv *env,jobject obj,jlong token) {
     (void)env; (void)obj; return search_is_cancelled((uint64_t)token)?JNI_TRUE:JNI_FALSE;
 }
-static void paste_error(bool search_input,const char *message) {
-    if(search_input) search_paste(NULL,0,message); else source_message(message);
-}
 JNIEXPORT void JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativePaste(JNIEnv *env,jobject obj,jbyteArray bytes,jstring error,jboolean search_input) {
     (void)obj;
+    int target=atomic_exchange(&paste_target,-1);
+    if(target<0) return;
     if(error) {
         const char *message=(*env)->GetStringUTFChars(env,error,NULL);
-        if(checked(env) && message) { paste_error(search_input,message); (*env)->ReleaseStringUTFChars(env,error,message); }
-        else paste_error(search_input,"读取剪贴板失败，请重试");
+        if(checked(env) && message) { paste_error(target,message); (*env)->ReleaseStringUTFChars(env,error,message); }
+        else paste_error(target,"读取剪贴板失败，请重试");
         return;
     }
-    if(!bytes) { paste_error(search_input,"剪贴板没有文本"); return; }
+    if(!bytes) { paste_error(target,"剪贴板没有文本"); return; }
     jsize n=(*env)->GetArrayLength(env,bytes);
     if(!checked(env) || n<=0 || n>(jsize)(search_input?SEARCH_QUERY_BYTES-1:SOURCE_BYTES)) {
-        paste_error(search_input,search_input?"关键词为空或超过 255 字节":"剪贴板为空或超过 2 MiB"); return;
+        paste_error(target,search_input?"文字为空或超过 255 字节":"剪贴板为空或超过 2 MiB"); return;
     }
     char *data=malloc((size_t)n);
-    if(!data) { paste_error(search_input,"内存不足，请重试"); return; }
+    if(!data) { paste_error(target,"内存不足，请重试"); return; }
     (*env)->GetByteArrayRegion(env,bytes,0,n,(jbyte *)data);
     if(checked(env)) {
-        if(search_input) search_paste(data,(size_t)n,NULL);
+        if(target==2) library_paste(data,(size_t)n,NULL);
+        else if(search_input) search_paste(data,(size_t)n,NULL);
         else source_command(SOURCE_IMPORT,0,data,(size_t)n);
-    } else paste_error(search_input,"读取剪贴板失败，请重试");
+    } else paste_error(target,"读取剪贴板失败，请重试");
     free(data);
 }

@@ -241,3 +241,32 @@ C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8
 - 单曲循环：首曲seek近末尾后自然结束，仍是Keyshia Cole且系统位置回到5ms继续PLAYING；随机下一首选到Jhené Aiko，上一首回Keyshia Cole。音量键令STREAM_MUSIC speaker从5到6，恢复后调回；横屏双栏封面/控制、竖屏与滚动正常，系统日志没有AndroidRuntime崩溃。
 - 最终APK再次安装，重复缓存原曲只补元数据，索引升级v2/5928字节/1条/总5956字节。关闭Wi-Fi和数据、force-stop冷启动从缓存选曲，connectivity显示Active default network:none，音频实际播放且封面从私有槽显示；随后暂停。公共目录仍仅原995863字节Love.m4a，没有重复音频。
 - 结束恢复网络/竖屏和原音源文件，SHA-256仍为`86fce0441f2674f562458e140caeb6e60b89b3a67efc55ee6cd6eb9ad251add9`；保留已验证升级的v2缓存索引。未改workflow/版本，不打标签或创建Release，仅勾选07。自写改动diff检查通过；完整检查仅报告新vendor原始头文件的两处上游行尾空白，保留原样校验。蓝牙设备切换未连接实测，沿用系统路由不宣称覆盖所有ROM。
+
+## 08-library：收藏、历史与歌单
+
+| 模块 | 职责 |
+| --- | --- |
+| `library.[ch]` | 进程级 C 库工作线程、64槽命令队列、歌曲身份去重、收藏/历史/歌单关系、事务回滚与私有持久化、六项分页与本地搜索 |
+| `library_ui.[ch]` / `ui.[ch]` | 库分类/浏览/搜索、名称输入、创建/重命名/删除、歌曲移除二次确认、播放页收藏与添加歌单入口 |
+| `playback.c:playback_state` | 当前 generation 的 STATE_READY 且 playing 首次成立才投递历史；不把加载/失败/每秒进度当新播放 |
+| `main.c` / `source_bridge.[ch]` | worker首次启动、looper订阅/解绑、库快照、复用短文本剪贴板；无新增Kotlin/Java/JNI签名 |
+
+### 线程、身份和关系
+- worker独占Store；GL/Java主线程/播放回调只复制内存命令，IO与搜索/分页扫描均由worker执行。64个FIFO槽有界，满时用户操作拒绝并可重试；历史投递失败会在后续播放状态回调重试。库锁只保护队列、分页请求、快照和looper，不持锁做加载/fsync/rename；锁序为playback.lock → library.lock，库不回调播放模块。
+- worker为有意的进程级常驻线程（首次启动后detach），不是Activity任务：只保留私有目录路径和自己的Store，不持有Activity、JNI对象或Engine。Activity结束只释放所acquire的looper；后台服务切歌仍能记录历史。无任务时cond等待，重开界面重新订阅；进程终止由系统一起回收，不在Activity退出时取消未完成库写入。
+- 全库最多1024个LibraryTrack，共享稳定单调track ID；收藏最多512个ID，历史最多200个ID，最多32张歌单，每张最多240个ID。不按歌单重复存整曲，移除关系后prune没有任何引用的歌曲；删除歌单不动收藏、历史、其它歌单或公共缓存。内存约5.32MiB Store，加单次修改的同量回滚副本、约0.35MiB命令队列及一页快照。
+- 库身份为来源ID/来源名 + 非空歌曲ID；ID缺失时用歌名/歌手/专辑/相近时长（差<2秒）。与音频缓存不同，库不按音质/URL区分同曲；再次添加歌单返回已存在，收藏按钮切换关系，历史再次播放只置顶，超过200首淘汰最旧关系。成功新增/历史更新会刷新共享歌曲的URL/音质/封面，不影响其它列表身份。不同来源不合并，来源删除不会删除已保存的库信息。
+- 歌单名称UTF-8≤255字节，去ASCII首尾空白、拒绝空名/控制字符，ASCII忽略大小写拒绝重名；不是全Unicode归一化。本地搜索按歌名/歌手/专辑子串，歌单目录按名称；ASCII不区分大小写，中文按UTF-8子串。查询/翻页用请求代次，只发布/消费匹配快照，每页六项；点击歌曲携带稳定track ID而非页内下标。歌单删除和歌曲移除的确认同时绑定action+ID，避免两种ID碰撞引起误删。
+
+### 持久化与失败边界
+- 文件`internalDataPath/lx-library-v1.bin`：8字节magic `LXLB 01 00 00 00`、u32 Store长度、5579832字节Store；固定当前arm64-v8a/x86_64小端64位ABI并static_assert，完整文件5579844字节。头含tracks/next_track/lists/next_list/favorites/history，后为收藏/历史ID数组、32个歌单记录和1024个歌曲记录；未来布局变化必须显式迁移，不能直接改sizeof覆盖旧数据。
+- 每个修改先复制Store回滚点，验证/修改/清理无引用记录，写0600同目录tmp，fflush/fsync/close后rename；成功才发布新页和已保存消息，失败回滚内存。加载校验版本/长度/数量/递增ID/UTF-8/地址/有限时长/引用存在性/身份与名称唯一性/EOF；损坏只读保护，不覆盖原文件，不自动恢复tmp。
+- 仅保证已报告保存成功的提交；动作刚入队或写盘中强杀可能丢最后未确认操作，未fsync目录，不承诺断电级事务。收藏/歌单不下载音频；库保留搜索返回的远程地址，过期需重新搜索选曲更新，播放仍按原缓存身份优先离线命中。卸载/清除应用数据会删除库；不做导出/同步/扫描公共媒体库，也不持久化播放队列。
+
+### 本轮验证记录
+- `./scripts/build.sh`成功（arm64-v8a/x86_64），保留既有非阻塞CXX5304提示；自写单文件≤800行，无新增Kotlin/Java、依赖或仓库测试用例。
+- `aosp_17` x86_64模拟器实际操作：创建commute→添加Love/Keyshia Cole→重复添加显示不会重复→重命名commute2；磁盘检查1个track、收藏1、历史1、歌单1且只有1个成员。KEYSHIA本地搜索匹配Keyshia Cole；force-stop/重新启动后歌曲与名称保留。
+- 最终APK验证移除歌单歌曲使成员1→0但收藏/历史各1；删除歌单使歌单1→0，收藏/历史不变；取消收藏使收藏1→0，历史仍1。创建7张歌单可翻到第2/2页list7，删除后正确回到6项/第1/1页，无卡在空尾页。
+- 损坏文件冷启动显示停止写入保护，原7字节文件SHA-256保持`f526795c95399cea27c055c842c3d6ab018ed0fa4f66f701c28ab22dec28237b`；恢复此前实际UI生成的库快照，SHA-256与备份一致。没有修改音源文件，其SHA-256仍为`86fce0441f2674f562458e140caeb6e60b89b3a67efc55ee6cd6eb9ad251add9`。
+- 真实Apple搜索返回26首，当前页8首入队；返回退出Activity后日志确认native activity finished，系统媒体下一首切到Musiq Soulchild并实际PLAYING，磁盘历史从1→2、共享曲目从1→2。重新进入界面后库文件SHA-256仍为`afc3df39322537b3b7e791be39bf1e982529346c110d2f2fef395cd364007e42`，验证记录不依赖Activity存活。最终暂停播放，无AndroidRuntime/Fatal signal崩溃。
+- 仅完成08，09/10保持未勾选；版本/workflow不变，不打tag或创建Release。本地APK只用于验收，不作为发布产物。

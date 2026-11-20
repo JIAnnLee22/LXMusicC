@@ -6,6 +6,7 @@
 #include "cache_bridge.h"
 #include "cover.h"
 #include "player_ui.h"
+#include "library_ui.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/keycodes.h>
@@ -180,7 +181,7 @@ static int32_t on_input(struct android_app *app,AInputEvent *event) {
         // 即使搜索软键盘展开，也把硬件音量交还系统媒体流处理。
         if(key==AKEYCODE_VOLUME_UP || key==AKEYCODE_VOLUME_DOWN || key==AKEYCODE_VOLUME_MUTE) return 0;
         if(key!=AKEYCODE_BACK) {
-            if(u->state.tab!=1 || !u->input_open) return 0;
+            if(!((u->state.tab==1 && u->input_open) || (u->state.tab==0 && u->library_input))) return 0;
             if(AKeyEvent_getAction(event)!=AKEY_EVENT_ACTION_DOWN) return 1;
             int ch=0;
             bool shift=(AKeyEvent_getMetaState(event)&AMETA_SHIFT_ON)!=0;
@@ -192,7 +193,7 @@ static int32_t on_input(struct android_app *app,AInputEvent *event) {
             else if(key==AKEYCODE_MINUS) ch='-';
             else if(key==AKEYCODE_APOSTROPHE) ch='\'';
             else if(key==AKEYCODE_PERIOD) ch='.';
-            if(ch && ui_search_key(u,ch,seconds())) e->dirty=true;
+            if(ch && (ui_library_key(u,ch,seconds()) || ui_search_key(u,ch,seconds()))) e->dirty=true;
             return 1;
         }
         if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_UP) {
@@ -230,6 +231,11 @@ void android_main(struct android_app *app) {
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
     playback_ui(app->looper);
+    if(!library_start(app->activity->internalDataPath,app->looper)) {
+        snprintf(e.ui.library.message,256,"音乐库启动失败，请退出后重试");
+        LOGE("library worker failed");
+    }
+    ui_library_refresh(&e.ui);
     playback_view(&e.ui.playback); ui_player_sync(&e.ui);
     bool cover_started=cover_start(app->activity->internalDataPath,source_wake,app->activity);
     bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
@@ -267,11 +273,13 @@ void android_main(struct android_app *app) {
             e.ui.cover_fade=0; e.dirty=true;
         }
         if(e.ui.playback_requested) { e.ui.playback_requested=false; playback_ensure(app->activity); }
+        if(library_view(&e.ui.library)) { ui_library_sync(&e.ui); e.dirty=true; }
         if(cache_view(&e.ui.cache)) e.dirty=true;
         if(source_view(&e.ui.sources)) e.dirty=true;
         if(search_view(&e.ui.search)) { ui_search_sync(&e.ui); e.dirty=true; }
         if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity,false); }
-        if(e.ui.search_paste_requested) { e.ui.search_paste_requested=false; source_bridge_paste(app->activity,true); }
+        if(e.ui.search_paste_requested) { e.ui.search_paste_requested=false; source_bridge_paste(app->activity,1); }
+        if(e.ui.library_paste_requested) { e.ui.library_paste_requested=false; source_bridge_paste(app->activity,2); }
         now=seconds(); float dt=(float)fmin(now-previous,.05); previous=now;
         if(app->window && e.ready && e.resumed && e.focused) {
             bool moved=ui_tick(&e.ui,dt);
@@ -280,6 +288,7 @@ void android_main(struct android_app *app) {
             }
         }
     }
+    library_ui(NULL); // 库线程为进程级，继续处理后台实际播放的历史记录。
     playback_ui(NULL); // 只解除 UI 订阅，进程级队列与前台服务继续播放。
     source_bridge_cancel(app->activity);
     if(cover_started) cover_stop();

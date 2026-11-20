@@ -26,11 +26,11 @@ C 入口：`bool platform_insets(ANativeActivity *activity, int insets[4])`，�
 | 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
 | --- | --- | --- | --- | --- |
 | C → SourceActivity | `requestSourcePaste` | `()Z` | NativeActivity 胶水线程调用，投递 Java 主线程读取剪贴板 | true 仅表示已投递；false/异常为失败；不创建 View，不读取剪贴板 URI 对应文件 |
-| SourceActivity → C | `nativePaste` | `([BLjava/lang/String;Z)V` | Java 主线程 | 04 新增 search 标记：false=音源导入、true=搜索关键词；标准 UTF-8 字节数组，失败 bytes=null、error 为可读错误。C 检查长度/UTF-8 后投递，不持有 JNI 引用 |
+| SourceActivity → C | `nativePaste` | `([BLjava/lang/String;Z)V` | Java 主线程 | 04 新增 search 标记：false=音源导入、true=短文本；08 在 C 侧用原子单槽目标区分网络搜索与音乐库文字，仍复用 requestSearchPaste/nativePaste，无新增 JNI 或 Kotlin；标准 UTF-8 字节数组，失败 bytes=null、error 为可读错误。C 检查长度/UTF-8 后投递，不持有 JNI 引用 |
 | C → SourceActivity | `fetchSource` | `(Ljava/lang/String;)[B` | C 音源工作线程，同步等待系统 HTTP(S) | 非 null 字节数组，首字节 1=正文字节、0=错误文本；剩余部分为标准 UTF-8。C 检查异常/null/长度/状态/UTF-8，成功返回 heap 字符串，调用者 free |
 | C → SourceActivity | `cancelSourceFetch` | `()V` | NativeActivity 胶水线程退出前 | 置 volatile 取消位，无网络 IO；下载在下一阻塞点结束后检查取消 |
 
-C 包装入口：`bool source_bridge_paste(ANativeActivity*,bool search)`、`char *source_bridge_fetch(void*,const char*,char error[256])`、`void source_bridge_cancel(ANativeActivity*)`。下载回调的 context 为当前 ANativeActivity；工作线程退出并 join 后才释放 Activity 相关上下文。取消位也在 Kotlin `onDestroy` 的 `super` 调用前设置；已关闭/正在销毁的 Activity 不执行排队的剪贴板回调。C 停止服务后拒绝入队。
+C 包装入口：`bool source_bridge_paste(ANativeActivity*,int target)`（0=音源、1=网络搜索、2=音乐库文字）、`char *source_bridge_fetch(void*,const char*,char error[256])`、`void source_bridge_cancel(ANativeActivity*)`。下载回调的 context 为当前 ANativeActivity；工作线程退出并 join 后才释放 Activity 相关上下文。取消位也在 Kotlin `onDestroy` 的 `super` 调用前设置；已关闭/正在销毁的 Activity 不执行排队的剪贴板回调。C 停止服务后拒绝入队。
 
 所有 C 端 GetObjectClass/GetMethodID、字符串/数组分配读取及 Call*Method 都检查异常与返回值，异常清除并记录 `LXMusicC`；PushLocalFrame/PopLocalFrame 限定局部引用，按需 attach/detach。URL 仅接受 ASCII（非 ASCII 路径需百分号编码），避免 NewStringUTF 的 modified UTF-8 歧义；正文使用 ByteArray，不用 GetStringUTFChars。后者仅用于桥接内固定 BMP 中文错误消息，取出后复制、立即 Release。
 
