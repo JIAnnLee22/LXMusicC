@@ -1,24 +1,38 @@
-# v1.0.0 发布准备
+# v1.0.0
 
-此摘要随 10-release 提交更新，尚不表示正式标签或远端 Release 已创建；最终摘要由 `tools/pi-loop.sh` 在完成后生成。
+- 生成时间：2026-11-20 21:09:06
+- 类型：正式版
 
-## 功能与使用
+## 已完成的功能集
 
-- 音源导入与管理、多源搜索、在线播放与后台媒体控制。
-- 公共 Music 目录缓存与离线播放、封面、拖动进度、播放队列与循环/随机模式。
-- 收藏、最近播放、自建歌单、本地搜索、仅 Wi-Fi 下载与主题设置。
-- 不内置音源或音乐资源，只兼容部分 LX 音源；仓库示例仅提供短预览。
+- `01-ui-shell` 纯 C 界面框架与页面骨架
+- `02-lx-source-import` LX 音源导入与元数据解析
+- `03-source-runtime` 音源请求执行（JS + HTTP）
+- `04-search` 多源搜索界面
+- `05-playback-service` 前台播放服务与通知
+- `06-cache` 公共目录缓存与离线播放
+- `07-player-ui` 播放页与进度
+- `08-library` 收藏 / 历史 / 歌单
+- `09-settings-polish` 设置与打磨
+- `10-release` 发布 1.0.0
 
-完整功能、用法与限制见 [README](../README.md) 和 [CHANGELOG](../CHANGELOG.md)。
+## 本次里程碑包含的提交
+
+```
+4a9d965 10-release: 定稿1.0.0文档并完善签名安装包发布链路
+ea1980f 09-settings-polish: 完善持久化设置与下载策略并打磨布局状态
+3316fc5 08-library: 实现收藏历史歌单与本地搜索持久化
+72aec7c 07-player-ui: 封面缓存与拖动进度及队列循环交互
+924b57c 06-cache: 公共音乐目录缓存与离线播放管理
+af027cb 05-playback-service: 实现前台播放服务与系统媒体控制
+c1b1503 04-search: 实现纯C多源并发搜索与分页选曲
+08984cf 03-source-runtime: 接入 QuickJS、LX 请求桥接与真实搜索自检
+6d7ec11 02-lx-source-import: 实现音源粘贴导入、元数据解析与持久化管理
+5de025f 01-ui-shell: 实现纯 C 四页界面与 SDF 渲染交互
+4aaed1c fix(pi-loop): 解析 PLAN 行的 stdin 用法
+fc92a51 feat(pi-loop): 受阻条目自动跳过、停止标记与汇总里的受阻列表
+```
 
 ## 安装
 
-正式发布后下载同一 Release 的 `lxmusicc.apk` 与 `SHA256SUMS`，核对 SHA-256 后允许安装未知应用并安装。需要 Android 8.0+、arm64-v8a / x86_64、OpenGL ES 3.0。
-
-未配置专用发布证书时使用调试证书签名（应用不可调试），跨构建可能签名不同、不能覆盖更新；不要直接卸载旧版，卸载会丢失音源、音乐库、设置和缓存列表。签名与验证边界见 [发布说明](RELEASE.md)。
-
-## 构建环境
-
-JDK 21；SDK API 36；Build Tools 36.0.0；NDK 29.0.14206865；CMake 4.1.2。与 `scripts/setup-android-sdk.sh`、`app/build.gradle.kts` 和 `tools/pi-loop.sh` 一致；安装脚本只补缺失组件。
-
-CI 使用 `scripts/build.sh :app:assembleRelease`，签名验证成功才上传安装包，不上传 unsigned APK。仅里程碑标签发布附件，普通分支 push 不产出安装包。远端下载与安装验收须在外层脚本发布后复核。
+下载本 Release 的 `lxmusicc-debug.apk` 安装即可。
