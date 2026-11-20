@@ -299,3 +299,19 @@ C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8
 - 最终运行时连续操作305秒：164轮四页切换与双向滚动，共1968次tap/swipe，PID始终16398，命令退出0，LXMusicC/AndroidRuntime/DEBUG无崩溃日志。54次内存采样总PSS为67674..68616KiB，末次68390KiB；Native Heap PSS为34018..34224KiB，末次34220KiB（约+202KiB后平台稳定），未见持续增长。此项是模拟器空状态/已有库与设置页的持续操作，真实搜索长列表另以上述26首分页/滚动验证，不冒充长时间联网压力测试。
 - 额外运行 `./scripts/build.sh :app:lintDebug`：首次发现既有服务启动点缺少Media3 UnstableApi opt-in，仅在既有 `requestPlaybackStart` 增加显式注解后重跑，构建和lint均成功（0错误，原有SDK/依赖版本等警告保留）。注解不改变运行时行为；未新增测试用例。音源文件SHA-256仍为`86fce0441f2674f562458e140caeb6e60b89b3a67efc55ee6cd6eb9ad251add9`。
 - 只勾选09，10仍未开始；README仅更新功能/使用，JNI细节留在docs。版本仍0.1.0，workflow不变，不创建标签或Release，本地APK仅验收。
+
+## 10-release：1.0.0 发布准备
+
+### 发布链路
+- Gradle 版本为 1.0.0 / versionCode 2，纯 C 设置与关于同步；功能/安装说明定稿在 README、CHANGELOG，发布工程说明在 `docs/RELEASE.md`。没有新 JNI、Kotlin/Java 文件或业务功能改动。
+- Release 变体配置签名，支持四个 `LX_RELEASE_*` 环境变量；全无时采用现有调试证书，全有时使用外部 keystore，缺项拒绝配置。无专用发行证书导致的跨构建覆盖风险已明确记录，不把调试签名称为稳定发行身份。
+- CI 共用 `scripts/build.sh`；Release 构建或签名验证失败立即终止，只收集 `lxmusicc.apk` 与 SHA256SUMS。外层 `write_summary` 同步附件名、签名警告和固定 SDK 版本；既有 bootstrap 骨架模板是初始 0.x 工程模板，本轮不将其重构为 1.0 发布模板，现有仓库不会重建覆盖它。
+
+### 本轮验证记录
+- `./scripts/setup-android-sdk.sh` 成功：现有 SDK 齐全，无需安装；API36 / Build Tools36.0.0 / NDK29.0.14206865 / CMake4.1.2 与 Gradle、外层脚本常量和里程碑文档逐项核对一致。`bash -n` 检查构建、SDK、外层脚本通过。
+- `./scripts/build.sh` 与 `./scripts/build.sh :app:assembleRelease` 均成功（最终复跑分别约 1 秒）；Release 的 lintVital 通过，保留本机 Nix SDK 既有 CXX5304 路径警告，无错误。未新增测试用例。
+- `apksigner verify --verbose --print-certs` 通过 APK Signature Scheme v2；`aapt dump badging` 确认 package `jiannlee22.lxmusicc`、1.0.0 / 2、minSdk26、targetSdk36、arm64-v8a / x86_64，未设 application-debuggable。本次验收包 SHA-256 为 `3e9aa2b416ecf6d5b834e5b8c439434a915803ce6bcae8db2febd5ace3c5ea15`（仅对应本地包，不承诺 CI 重构建逐字节相同）。
+- 无签名参数的默认路径成功；四变量显式指向已有本机调试 keystore 的路径构建并验签成功，未生成新密钥；仅设置 KEY_ALIAS 的不完整配置按预期失败并给出中文错误，之后恢复无参数复跑成功。带参数的 build.sh 已实际多次成功执行，不存在只验证无参数构建的遗漏。
+- Android 17 x86_64 模拟器与 Android 15 arm64 真机均由 0.1.0 / 1 用 `adb install -r` 覆盖安装成功，未卸载或清数据。冷启动 `am start -W` 返回 ok，模拟器约183ms、真机约315ms；真机/模拟器截图均显示完整歌曲页。模拟器继续切换搜索、正在播放、设置，设置显示1.0.0，原收藏、3个音源、2首缓存与淡紫色/Wi-Fi设置仍在；检查进程存活，模拟器当前进程 LXMusicC/AndroidRuntime 日志没有崩溃。
+- 两份 workflow 经 YAML 解析及所有 run 段的 bash 语法检查通过；自动断言无分支 push 触发，PLAN 的 diff 只有10复选框变化，`git diff --check` 通过。签名包与 SHA256SUMS 附件收集在被忽略的 logs 目录本地复核，校验通过。
+- 本轮不手动创建标签、Release 或上传 APK；仅勾选10，保持标签触发和普通分支 push 无安装包产出。远端正式附件下载/安装需外层 pi-loop.sh 发布后复核，本地验证不冒充正式 Release 已发布成功。

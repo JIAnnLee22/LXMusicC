@@ -26,5 +26,5 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
-        run: ./gradlew --console=plain --no-daemon :app:assembleDebug
+      - name: Build debug and release APKs (no upload)
+        run: ./scripts/build.sh --no-daemon :app:assembleDebug :app:assembleRelease

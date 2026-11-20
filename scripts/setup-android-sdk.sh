@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CI 安装 Android SDK/NDK 组件（本机已装则自动跳过）。
-# 改版本时同步 app/build.gradle.kts（compileSdk / targetSdk / ndkVersion）。
+# 改版本时同步 app/build.gradle.kts、tools/pi-loop.sh、docs/RELEASE.md 与 release.yml。
 set -euo pipefail
 ANDROID_API="${ANDROID_API:-36}"
 BUILD_TOOLS="${BUILD_TOOLS:-36.0.0}"
@@ -49,7 +49,7 @@ else
 fi
 
 MISSING=0
-for path in "platforms/android-$ANDROID_API" "build-tools/$BUILD_TOOLS" "ndk/$NDK_VERSION" "cmake/$CMAKE_VERSION"; do
+for path in "platform-tools" "platforms/android-$ANDROID_API" "build-tools/$BUILD_TOOLS" "ndk/$NDK_VERSION" "cmake/$CMAKE_VERSION"; do
     if [ ! -d "$SDK_ROOT/$path" ]; then
         echo "缺少 SDK 组件：$path" >&2
         MISSING=1

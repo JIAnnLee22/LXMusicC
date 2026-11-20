@@ -998,7 +998,16 @@ write_summary() {
         echo
         echo "## 安装"
         echo
-        echo "下载本 Release 的 \`lxmusicc-debug.apk\` 安装即可。"
+        echo "下载本 Release 的 \`lxmusicc.apk\`，允许安装未知应用后安装；Android 8.0+，arm64-v8a / x86_64，OpenGL ES 3.0。"
+        echo
+        echo "用同一 Release 的 \`SHA256SUMS\` 核对完整性。未配置专用发布证书时使用调试证书签名，不保证跨构建覆盖更新；卸载会丢失应用内数据。"
+        echo
+        echo "功能、用法和兼容限制见 [README](https://github.com/JIAnnLee22/LXMusicC/blob/main/README.md) 与 [CHANGELOG](https://github.com/JIAnnLee22/LXMusicC/blob/main/CHANGELOG.md)。"
+        echo
+        echo "## 构建环境"
+        echo
+        echo "SDK API $SDK_API / Build Tools $BUILD_TOOLS / NDK $NDK_VERSION / CMake $CMAKE_VERSION；JDK 21。"
+        echo "由 \`scripts/setup-android-sdk.sh\` 仅补缺失组件，\`scripts/build.sh :app:assembleRelease\` 构建，CI 检查签名后上传；详见 [发布说明](https://github.com/JIAnnLee22/LXMusicC/blob/main/docs/RELEASE.md)。"
     } > "$PROJECT_DIR/docs/MILESTONE-LATEST.md"
 
     {

@@ -54,7 +54,7 @@
   - 空状态/骨架屏/错误重试；长列表滚动性能；横竖屏与安全区适配
   - 验收：所有页面无裁切、无卡死；连续操作 5 分钟不崩溃、内存平稳
 
-- [ ] `10-release` 发布 1.0.0
+- [x] `10-release` 发布 1.0.0
   - 版本号 `1.0.0`、README 与 CHANGELOG 定稿（只写功能与使用）
   - 确认 `docs/MILESTONE-LATEST.md` 与 `scripts/setup-android-sdk.sh` 的一致性
   - 不要自己打 tag：`pi-loop.sh` 在全部条目完成后会打 `v1.0.0` 并触发 CI 发布

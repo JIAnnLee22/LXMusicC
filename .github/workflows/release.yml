@@ -35,21 +35,31 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
-        run: ./gradlew --console=plain --no-daemon :app:assembleDebug
-
-      - name: Build release APK (unsigned until signing is configured)
-        continue-on-error: true
-        run: ./gradlew --console=plain --no-daemon :app:assembleRelease
+      - name: Build installable release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          LX_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          LX_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          LX_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            export LX_RELEASE_STORE_FILE="$RUNNER_TEMP/lxmusicc-signing.jks"
+            trap 'rm -f "$LX_RELEASE_STORE_FILE"' EXIT
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$LX_RELEASE_STORE_FILE"
+          else
+            echo '::warning::未配置专用证书：使用调试证书签名，跨构建不保证覆盖更新。'
+          fi
+          ./scripts/build.sh --no-daemon :app:assembleRelease
 
       - name: Collect artifacts
         run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/lxmusicc-debug.apk
-          shopt -s nullglob
-          for f in app/build/outputs/apk/release/*.apk; do
-            cp "$f" "dist/lxmusicc-$(basename "$f" | sed 's/^app-//')"
-          done
+          cp "$apk" dist/lxmusicc.apk
+          (cd dist && sha256sum lxmusicc.apk > SHA256SUMS)
           ls -l dist
 
       - name: Publish release
@@ -60,4 +70,7 @@ jobs:
           name: ${{ github.ref_name }}
           prerelease: ${{ startsWith(github.ref_name, 'snapshot-') }}
           body_path: docs/MILESTONE-LATEST.md
-          files: dist/*.apk
+          fail_on_unmatched_files: true
+          files: |
+            dist/lxmusicc.apk
+            dist/SHA256SUMS
