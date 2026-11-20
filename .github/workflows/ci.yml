@@ -1,0 +1,31 @@
+# 只做编译检查：PR 或手动触发。push 分支不触发，也没有任何产物上传。
+name: CI (build only)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK / NDK packages
+        run: bash scripts/setup-android-sdk.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: ./gradlew --console=plain --no-daemon :app:assembleDebug
