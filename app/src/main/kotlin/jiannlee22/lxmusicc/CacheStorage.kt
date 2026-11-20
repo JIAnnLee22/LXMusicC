@@ -75,6 +75,7 @@ internal object CacheStorage {
 
     private fun download(activity: SourceActivity, url: String, folder: String, filename: String,
                          maxBytes: Long, cancelled: () -> Boolean): ByteArray {
+        if (cancelled()) abort("下载已取消")
         if (url.isEmpty()) abort("下载地址为空")
         if (filename.isEmpty()) abort("缓存文件名无效")
         checkSegment(filename)
@@ -209,6 +210,7 @@ internal object CacheStorage {
                     val declared = connection.contentLengthLong
                     if (declared > limit) abort("文件超过缓存上限")
                     val written = connection.inputStream.use { input -> consume(input) }
+                    if (cancelled()) abort("下载已取消")
                     if (written <= 0) abort("下载内容为空")
                     if (declared >= 0 && written != declared) abort("下载不完整，请重试")
                     return written

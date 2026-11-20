@@ -6,6 +6,7 @@
 #include "playback.h"
 #include "cache.h"
 #include "library.h"
+#include "settings.h"
 #define UI_STATE_VERSION 1u
 typedef struct {
     unsigned version;
@@ -45,6 +46,7 @@ typedef struct {
     bool library_adding,library_paste_requested;
     SearchItem library_candidate;
     char library_query[256],library_name[256];
+    SettingsView settings;
     CacheView cache;
     bool cache_open, cache_clear_confirm;
     uint32_t cache_delete_id;

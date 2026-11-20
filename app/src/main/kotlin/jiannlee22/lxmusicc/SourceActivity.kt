@@ -14,6 +14,7 @@ class SourceActivity : NativeActivity() {
     private external fun nativePaste(data: ByteArray?, error: String?, search: Boolean)
     private external fun nativeSearchCancelled(token: Long): Boolean
     private external fun nativeCoverCancelled(token: Long): Boolean
+    private external fun nativeCacheNetworkAllowed(flags: Int): Boolean
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,6 +32,7 @@ class SourceActivity : NativeActivity() {
 
     fun cancelSourceFetch() { closing = true }
 
+    @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
     fun requestPlaybackStart(): Boolean {
         if (closing) return false
         runOnUiThread {
@@ -52,7 +54,11 @@ class SourceActivity : NativeActivity() {
      */
     fun requestCache(action: Int, url: ByteArray?, folder: ByteArray?, filename: ByteArray?,
                      uri: ByteArray?, maxBytes: Long): ByteArray =
-        CacheStorage.execute(this, action, url, folder, filename, uri, maxBytes) { closing }
+        CacheStorage.execute(this, action, url, folder, filename, uri, maxBytes) {
+            if (!nativeCacheNetworkAllowed(SystemNetwork.flags(this)))
+                throw IOException("下载受设置限制，请等待设置加载或连接非计费 Wi-Fi 后重试")
+            closing
+        }
 
     fun requestRuntimeSearch(data: ByteArray, token: Long): ByteArray =
         RuntimeHttp.execute(data) { closing || nativeSearchCancelled(token) }

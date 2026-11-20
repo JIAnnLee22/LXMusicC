@@ -1,4 +1,5 @@
 #include "cache_bridge.h"
+#include "settings.h"
 #include <android/native_activity.h>
 #include <android/log.h>
 #include <jni.h>
@@ -6,6 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+JNIEXPORT jboolean JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativeCacheNetworkAllowed(
+    JNIEnv *env,jobject self,jint flags) {
+    return settings_download_allowed((unsigned)flags)?JNI_TRUE:JNI_FALSE;
+}
 
 static bool clean(JNIEnv *env) {
     if(!(*env)->ExceptionCheck(env)) return true;

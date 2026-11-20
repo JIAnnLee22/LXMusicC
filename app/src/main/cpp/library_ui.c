@@ -3,7 +3,7 @@
 #include <string.h>
 
 static const Color TEXT={.90f,.93f,.97f,1}, MUTED={.53f,.60f,.68f,1};
-static const Color CARD={.075f,.094f,.12f,1}, TINT={.08f,.20f,.19f,1}, ACCENT={.34f,.88f,.72f,1};
+static const Color CARD={.075f,.094f,.12f,1};
 static void hit(Ui *u,Rect b,int action,int value) {
     if(u->hit_count<128) u->hits[u->hit_count++]=(UiHit){b,action,value};
 }
@@ -21,7 +21,8 @@ static void label(Renderer *r,float x,float y,float w,float size,Color c,const c
 }
 static void button(Ui *u,Renderer *r,Rect b,const char *s,int action,int value) {
     render_rect(r,b,12,TINT);
-    label(r,b.x+8,b.y+b.h/2+5,b.w-16,13,ACCENT,s); hit(u,b,action,value);
+    float width=render_text_width(s,13),size=width>b.w-12?13*(b.w-12)/width:13;
+    render_text(r,b.x+(b.w-render_text_width(s,size))/2,b.y+b.h/2+size*.34f,size,ACCENT,s); hit(u,b,action,value);
 }
 static void notice(Ui *u,const char *s,double now) {
     snprintf(u->toast,sizeof(u->toast),"%s",s); u->toast_until=now+2.6;
@@ -55,7 +56,7 @@ float ui_library_draw(Ui *u,Renderer *r,float x,float y,float w) {
     for(int i=0;i<3;++i) button(u,r,(Rect){x+i*(fw+8),y,fw,40},filters[i],LIBUI_FILTER,i);
     y+=52;
     label(r,x,y+19,w,18,TEXT,v->title[0]?v->title:"音乐库加载中"); y+=30;
-    label(r,x,y+15,w,12,ACCENT,v->busy?"正在保存 / 加载…":v->message); y+=28;
+    y=render_paragraph(r,x,y,w,12,ACCENT,v->busy?"正在保存 / 加载…":v->message); y+=9;
     if(u->library_adding) {
         label(r,x,y+16,w,13,ACCENT,"选择一张歌单添加当前歌曲"); y+=28;
         button(u,r,(Rect){x,y,w,32},"取消添加",LIBUI_CANCEL,0); y+=44;
@@ -83,14 +84,21 @@ float ui_library_draw(Ui *u,Renderer *r,float x,float y,float w) {
     }
     // 浏览请求尚在后台计算时不显示旧列表，避免把旧页索引当成新页数据。
     if(v->request!=u->library_request || v->list!=u->library_id || strcmp(v->query,u->library_query) || v->page!=u->library_page) {
-        label(r,x,y+25,w,14,MUTED,u->library_input==1?"输入后点击搜索":"正在更新列表…"); return y+60-start;
+        y=render_paragraph(r,x,y,w,14,MUTED,u->library_input==1?"输入后点击搜索":
+            !v->busy && strstr(v->message,"失败")?v->message:"正在更新列表…");
+        for(int i=0;i<3;++i) {
+            render_rect(r,(Rect){x,y+14,w,54},12,CARD);
+            render_rect(r,(Rect){x+12,y+28,w*.6f,6},3,TINT);
+            render_rect(r,(Rect){x+12,y+46,w*.35f,4},2,TINT); y+=64;
+        }
+        return y+12-start;
     }
     char summary[100]; snprintf(summary,sizeof(summary),"%d 项 · 第 %d / %d 页",v->total,v->page+1,v->total?(v->total+5)/6:1);
     label(r,x,y+18,w,13,TEXT,summary); y+=30;
     if(!v->count) {
-        label(r,x+8,y+28,w-16,15,MUTED,u->library_query[0]?"没有匹配项，可清除关键词重试":u->library_id==-1?"暂无歌单，点击创建歌单":u->library_id==1?"暂无历史，实际播放后自动记录":"暂无歌曲，在播放页收藏或添加到歌单");
-        button(u,r,(Rect){x,y+48,w,36},"前往搜索",LIBUI_PLAY,-1);
-        return y+100-start;
+        y=render_paragraph(r,x+8,y+12,w-16,15,MUTED,u->library_query[0]?"没有匹配项，可清除关键词重试":u->library_id==-1?"暂无歌单，点击创建歌单":u->library_id==1?"暂无历史，实际播放后自动记录":"暂无歌曲，在播放页收藏或添加到歌单");
+        button(u,r,(Rect){x,y+16,w,36},"前往搜索",LIBUI_PLAY,-1);
+        return y+68-start;
     }
     button(u,r,(Rect){x,y,(w-10)/2,32},"上一页",LIBUI_PAGE,-1);
     button(u,r,(Rect){x+(w+10)/2,y,(w-10)/2,32},"下一页",LIBUI_PAGE,1); y+=44;
@@ -117,8 +125,8 @@ float ui_library_player(Ui *u,Renderer *r,float x,float y,float w) {
     float bw=(w-10)/2;
     button(u,r,(Rect){x,y,bw,36},"收藏 / 取消收藏",LIBUI_FAVORITE,0);
     button(u,r,(Rect){x+bw+10,y,bw,36},"添加到歌单",LIBUI_PICK,0);
-    label(r,x,y+58,w,12,MUTED,u->library.busy?"音乐库正在保存…":u->library.message);
-    return 76;
+    float end=render_paragraph(r,x+2,y+46,w-4,12,MUTED,u->library.busy?"音乐库正在保存…":u->library.message);
+    return end-y+12;
 }
 void ui_library_action(Ui *u,int action,int value,double now) {
     if(action!=LIBUI_DELETE && action!=LIBUI_REMOVE) u->library_confirm=0;

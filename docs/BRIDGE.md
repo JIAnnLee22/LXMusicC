@@ -1,6 +1,6 @@
 # JNI 桥接契约
 
-UI 和业务逻辑全部在 C。C 通过 Android 框架 JNI 只读查询安全区；02 阶段新增 `SourceActivity.kt`（NativeActivity 子类），仅封装系统剪贴板与 HTTP(S)，没有 Kotlin UI 或 Java 源码。
+UI 和业务逻辑全部在 C。C 通过 Android 框架 JNI 只读查询安全区；`SourceActivity.kt`（NativeActivity 子类）及其辅助对象仅封装系统剪贴板、HTTP(S)、网络能力和媒体/存储服务，没有 Kotlin UI 或 Java 源码。
 
 ## 系统安全区（01-ui-shell）
 
@@ -120,3 +120,13 @@ C 包装 `cover_bridge_fetch(context,url,token,size)` 返回 malloc 图片字节
 HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 HTTPS 降级，仅接受 HTTP 200；连接 2 秒/读 1 秒/总 20 秒检查点时限，正文最多 2 MiB。DNS/底层阻塞仍不承诺硬截止。Activity 退出先置既有 closing，再 cover_stop 取消并 join，最后才释放 Activity；没有主/GL 线程网络或磁盘 IO。
 
 播放服务 JNI 签名不变。C 内部命令新增 `PLAYBACK_SELECT=9`（绝对队列索引）和 `PLAYBACK_MODE=10`（0顺序/1列表循环/2单曲循环/3随机），只在 C 消费、不转发 Kotlin；系统 nativeCommand 仍为原有 2..8，nativeCanSkip 采用当前模式边界。`SourceActivity.onCreate` 仅用框架 `volumeControlStream=STREAM_MUSIC`；C 对音量键返回未处理，由系统调节媒体流，Media3 沿用系统输出路由，不新增音量/路由 JNI 或 UI。
+
+## 设置与下载网络限制（09-settings-polish）
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| SourceActivity → C | `nativeCacheNetworkAllowed` | `(I)Z` | 缓存 C worker 同步调用 Kotlin 后，在同一线程回 C；无 IO、无锁 | flags 位 1=Wi-Fi、2=非计费、4=系统已验证联网。C 原子读取已保存策略：未加载拒绝；仅 Wi-Fi 开启时三位必须全有；关闭时放行至既有 HTTP 错误处理 |
+
+实现 `cache_bridge.c` → `settings_download_allowed`，`SystemNetwork.flags` 只用系统 `ConnectivityManager.activeNetwork/getNetworkCapabilities` 查询事实（既有 `ACCESS_NETWORK_STATE` 权限），查询异常/无默认网络返回 0。设置文件与业务判断均在 C；Kotlin 不保存主题、开关或业务队列。C 无 JNI 调用、不读数组/对象，因此本回调不需要 attach/异常清除；Kotlin native 调用异常仍由既有 `CacheStorage.execute` 捕获并转换错误字节，外层 C `requestCache` 返回值/异常检查不变。
+
+`requestCache(I[B[B[B[BJ)[B` 签名不变；下载前（创建文件前）、每跳重定向、读写块及响应完成沿用取消检查点，除 closing 外执行网络策略检查。拒绝抛可读错误「下载受设置限制，请等待设置加载或连接非计费 Wi-Fi 后重试」，进入原有 pending/part 清理路径。已命中缓存只探测本地文件，不查询网络；删除/清空/检查文件不受此限制。设置修改成功保存后原子发布，新策略在下一检查点生效；系统阻塞读/DNS 不能硬中断，不保证已经开始的一次系统读立即停止。

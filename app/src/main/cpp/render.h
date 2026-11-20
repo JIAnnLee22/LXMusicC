@@ -18,6 +18,7 @@ typedef struct {
     GLint resolution;
     float width, height, scale;
     int pixel_w, pixel_h, count;
+    Rect clip; // CPU 剔除视口外图元，长页滚动不向 GPU 上传不可见内容。
     Vertex vertices[RENDER_QUADS * 6];
 } Renderer;
 
@@ -34,4 +35,6 @@ bool render_cover_upload(Renderer *r,const unsigned char *pixels,int width,int h
 void render_cover(Renderer *r,Rect rect,float radius,float opacity);
 void render_text(Renderer *r, float x, float baseline, float size, Color color, const char *text);
 float render_text_width(const char *text, float size);
+/* UTF-8 按实际字形宽度换行，返回下一行起点，用于状态/错误说明。 */
+float render_paragraph(Renderer *r,float x,float y,float width,float size,Color color,const char *text);
 #endif

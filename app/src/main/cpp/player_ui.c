@@ -5,7 +5,6 @@
 
 static const Color TEXT={.90f,.93f,.97f,1}, MUTED={.53f,.60f,.68f,1};
 static const Color CARD={.075f,.094f,.12f,1}, LINE={.13f,.17f,.21f,1};
-static const Color ACCENT={.34f,.88f,.72f,1}, TINT={.08f,.20f,.19f,1};
 static float clamp(float v,float a,float b) { return fminf(fmaxf(v,a),b); }
 static bool inside(Rect r,float x,float y) { return x>=r.x && x<r.x+r.w && y>=r.y && y<r.y+r.h; }
 static void label(Renderer *r,float x,float y,float w,float size,Color c,const char *s) {
@@ -21,7 +20,8 @@ static void label(Renderer *r,float x,float y,float w,float size,Color c,const c
 }
 static void button(Ui *u,Renderer *r,Rect b,const char *s,int action,int value,bool active) {
     render_rect(r,b,12,active?ACCENT:TINT);
-    render_text(r,b.x+(b.w-render_text_width(s,13))/2,b.y+b.h/2+4,13,active?CARD:ACCENT,s);
+    float width=render_text_width(s,13),size=width>b.w-12?13*fmaxf(0,b.w-12)/width:13;
+    render_text(r,b.x+(b.w-render_text_width(s,size))/2,b.y+b.h/2+size*.34f,size,active?CARD:ACCENT,s);
     if(u->hit_count<128) u->hits[u->hit_count++]=(UiHit){b,action,value};
 }
 static void clock_text(char out[32],int64_t ms) {
@@ -87,7 +87,7 @@ float ui_player_draw(Ui *u,Renderer *r,float x,float y,float w) {
     // 下列通用控制仍由 ui.c 下发，数值与其 ACT_PLAYBACK/SEEK 区间解耦。
     float bw=(dw-16)/3;
     button(u,r,(Rect){dx,dy+138,bw,42},"上一首",PLAYER_SELECT,-2,false);
-    button(u,r,(Rect){dx+bw+8,dy+138,bw,42},p->requested&&!p->error[0]?"暂停":"播放",PLAYER_SELECT,-3,true);
+    button(u,r,(Rect){dx+bw+8,dy+138,bw,42},p->error[0]?"重试":p->requested?"暂停":"播放",PLAYER_SELECT,-3,true);
     Rect next={dx+2*bw+16,dy+138,bw,42};
     if(p->mode==PLAYBACK_MODE_SEQUENCE && p->index+1==p->count) {
         render_rect(r,next,12,CARD);
@@ -100,20 +100,20 @@ float ui_player_draw(Ui *u,Renderer *r,float x,float y,float w) {
     button(u,r,(Rect){dx+(dw+8)/2,dy+232,(dw-8)/2,34},"上滑展开队列",PLAYER_TOGGLE_QUEUE,0,false);
     const char *status=p->error[0]?p->error:p->playing?"正在播放":p->state==2?"正在加载…":
         p->state==4?"播放结束":p->requested?"等待音频焦点":"已暂停";
-    label(r,dx+6,dy+288,dw-12,12,ACCENT,status);
+    float sy=render_paragraph(r,dx+6,dy+276,dw-12,12,ACCENT,status);
     char info[320]; snprintf(info,sizeof(info),"%d / %d · %s",p->index+1,p->count,p->current.source_name);
-    label(r,dx+6,dy+308,dw-12,11,MUTED,info);
-    // 缓存动作在 ui.c 复用，避免第二套下载入口。
-    button(u,r,(Rect){dx,dy+320,(dw-8)/2,34},u->cache.busy?"缓存处理中…":"缓存当前歌曲",PLAYER_SELECT,-7,false);
-    button(u,r,(Rect){dx+(dw+8)/2,dy+320,(dw-8)/2,34},p->local_uri[0]?"离线播放 / 管理":"缓存管理",PLAYER_SELECT,-8,false);
-    label(r,dx+6,dy+375,dw-12,11,ACCENT,u->cache.message);
-    label(r,dx+6,dy+396,dw-12,11,MUTED,"音量键调节媒体音量，输出跟随系统");
+    label(r,dx+6,sy+14,dw-12,11,MUTED,info); sy+=26;
+    // 状态按实际行数推进，窄屏长错误不与缓存按钮重叠，全部可滚动到达。
+    button(u,r,(Rect){dx,sy,(dw-8)/2,34},u->cache.busy?"缓存处理中…":"缓存当前歌曲",PLAYER_SELECT,-7,false);
+    button(u,r,(Rect){dx+(dw+8)/2,sy,(dw-8)/2,34},p->local_uri[0]?"离线播放 / 管理":"缓存管理",PLAYER_SELECT,-8,false); sy+=46;
+    sy=render_paragraph(r,dx+6,sy,dw-12,11,ACCENT,u->cache.message);
+    sy=render_paragraph(r,dx+6,sy+4,dw-12,11,MUTED,"音量键调节媒体音量，输出跟随系统"); sy+=10;
     if(p->current.song.cover[0] && !r->cover) {
-        if(u->cover_loading) label(r,dx+6,dy+428,dw-12,11,MUTED,"正在加载封面…");
-        else button(u,r,(Rect){dx,dy+408,dw,30},"暂无封面 / 点击重试",PLAYER_RETRY_COVER,0,false);
-        dy+=38;
+        if(u->cover_loading) label(r,dx+6,sy+20,dw-12,11,MUTED,"正在加载封面…");
+        else button(u,r,(Rect){dx,sy,dw,30},"暂无封面 / 点击重试",PLAYER_RETRY_COVER,0,false);
+        sy+=38;
     }
-    return fmaxf(y+cover,dy+414)-start+16;
+    return fmaxf(y+cover,sy)-start+16;
 }
 void ui_player_sync(Ui *u) {
     PlaybackView *p=&u->playback;

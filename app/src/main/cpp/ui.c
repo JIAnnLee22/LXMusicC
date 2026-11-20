@@ -7,7 +7,6 @@
 
 static const Color TEXT={.90f,.93f,.97f,1}, MUTED={.53f,.60f,.68f,1};
 static const Color CARD={.075f,.094f,.12f,1}, LINE={.13f,.17f,.21f,1};
-static const Color ACCENT={.34f,.88f,.72f,1}, TINT={.08f,.20f,.19f,1};
 static const char *TABS[]={"歌曲","搜索","正在播放","设置"};
 enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SOURCE_OPEN, ACT_SOURCE_BACK, ACT_SOURCE_PASTE, ACT_SOURCE_PAGE,
@@ -15,7 +14,8 @@ enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SEARCH_INPUT, ACT_SEARCH_SUBMIT, ACT_SEARCH_PASTE, ACT_SEARCH_CANCEL,
     ACT_SEARCH_RETRY, ACT_SEARCH_PAGE, ACT_SEARCH_SELECT, ACT_SEARCH_KEY, ACT_SEARCH_CLOSE,
     ACT_PLAYBACK, ACT_PLAYBACK_SEEK, ACT_CACHE_OPEN, ACT_CACHE_BACK, ACT_CACHE_DOWNLOAD,
-    ACT_CACHE_PAGE, ACT_CACHE_PLAY, ACT_CACHE_DELETE, ACT_CACHE_CLEAR, ACT_CACHE_LIMIT, ACT_CACHE_REFRESH };
+    ACT_CACHE_PAGE, ACT_CACHE_PLAY, ACT_CACHE_DELETE, ACT_CACHE_CLEAR, ACT_CACHE_LIMIT, ACT_CACHE_REFRESH,
+    ACT_PREF_WIFI, ACT_PREF_THEME, ACT_PREF_RETRY };
 static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s);
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
@@ -27,6 +27,8 @@ static void text(Renderer *r,float x,float y,float size,Color color,const char *
     render_text(r,x,y,size,color,s);
 }
 static void center(Renderer *r,Rect b,float size,Color color,const char *s) {
+    float width=render_text_width(s,size);
+    if(width>b.w-12 && width>0) size*=fmaxf(0,b.w-12)/width;
     text(r,b.x+(b.w-render_text_width(s,size))/2,b.y+b.h/2+size*.34f,size,color,s);
 }
 static void button(Ui *u,Renderer *r,Rect b,const char *s,int action,int value,bool filled) {
@@ -54,7 +56,8 @@ void ui_cancel(Ui *u) { u->pressed=u->dragging=u->seeking=false; u->velocity=0; 
 void ui_layout(Ui *u,Rect area) {
     u->area=area;
     float header=area.h<380?66:92;
-    u->body=(Rect){area.x+20,area.y+header,area.w-40,fmaxf(0,area.h-header-76)};
+    float padding=area.w<360?12:20;
+    u->body=(Rect){area.x+padding,area.y+header,fmaxf(0,area.w-2*padding),fmaxf(0,area.h-header-76)};
 }
 
 /* 外部歌名仅在可用宽度内显示，不能画到按钮/安全区之外。 */
@@ -135,9 +138,14 @@ static float search(Ui *u,Renderer *r,float x,float y,float w) {
         int enabled=0;
         for(int i=0;i<u->sources.count;++i) if(u->sources.items[i].enabled) ++enabled;
         render_rect(r,(Rect){x,y,w,106},18,CARD);
+        if(!v->busy) hit(u,(Rect){x,y,w,106},enabled?ACT_SEARCH_RETRY:ACT_SOURCE_OPEN,0);
         center(r,(Rect){x,y+10,w,36},22,ACCENT,v->busy?"…":"♪");
-        center(r,(Rect){x,y+53,w,32},14,TEXT,v->busy?"正在搜索，可随时取消":
+        fitted(r,x+12,y+76,w-24,13,TEXT,v->busy?"正在搜索，可随时取消":
             !enabled?"暂无启用音源，请先导入并启用":v->keyword[0]?"暂无结果，可重试或换个关键词":"准备好后点击搜索");
+        if(v->busy) {
+            render_rect(r,(Rect){x+12,y+90,w*.60f,4},2,LINE);
+            render_rect(r,(Rect){x+12,y+98,w*.38f,4},2,LINE);
+        }
         return y+122-start;
     }
     char page[96]; snprintf(page,sizeof(page),"%d 首 · 第 %d / %d 页",v->total,v->page+1,(v->total+SEARCH_PAGE_SIZE-1)/SEARCH_PAGE_SIZE);
@@ -159,23 +167,7 @@ static float search(Ui *u,Renderer *r,float x,float y,float w) {
 
 // UTF-8 按可用宽度换行，外部元数据不参与格式化或执行。
 static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s) {
-    char line[1028]; size_t n=0;
-    for(const char *p=s;;) {
-        unsigned char c=(unsigned char)*p;
-        size_t step=c<128?1:c>=0xc2&&c<224?2:c>=224&&c<240?3:c>=240&&c<245?4:1;
-        for(size_t k=1;k<step;++k) if(!p[k] || ((unsigned char)p[k]&0xc0)!=0x80) { step=1; break; }
-        if(!c || c=='\n' || n+step>=sizeof(line)) {
-            line[n]=0; text(r,x,y+size,size,color,line); y+=size+7; n=0;
-            if(!c) break;
-            if(c=='\n') { ++p; continue; }
-        }
-        memcpy(line+n,p,step); line[n+step]=0;
-        if(n && render_text_width(line,size)>w) {
-            line[n]=0; text(r,x,y+size,size,color,line); y+=size+7; n=0;
-        }
-        memcpy(line+n,p,step); n+=step; p+=step;
-    }
-    return y;
+    return render_paragraph(r,x+2,y,w-4,size,color,s);
 }
 static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     float start=y;
@@ -186,7 +178,7 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     y=wrapped(r,x,y+4,w,13,ACCENT,u->sources.message); y+=14;
     if(!u->sources.count) {
         render_rect(r,(Rect){x,y,w,100},16,CARD);
-        center(r,(Rect){x,y+12,w,30},18,TEXT,"还没有音源");
+        center(r,(Rect){x,y+12,w,30},18,TEXT,u->sources.busy?"正在加载 / 导入音源…":"还没有音源");
         center(r,(Rect){x,y+50,w,28},12,MUTED,"导入只保存脚本，不会执行代码");
         return y+120-start;
     }
@@ -220,6 +212,16 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     }
     return y-start;
 }
+static float cache_limits(Ui *u,Renderer *r,float x,float y,float w) {
+    const int limits[]={256,512,1024,2048};
+    int columns=w<360?2:4; float bw=(w-6*(columns-1))/columns;
+    for(int i=0;i<4;++i) {
+        char label[24]; snprintf(label,sizeof(label),"%d MiB",limits[i]);
+        button(u,r,(Rect){x+(i%columns)*(bw+6),y+(i/columns)*42,bw,34},label,
+            ACT_CACHE_LIMIT,limits[i],u->cache.limit==(uint64_t)limits[i]*CACHE_MIB);
+    }
+    return y+(4/columns)*42+2;
+}
 static float caches(Ui *u,Renderer *r,float x,float y,float w) {
     float start=y; CacheView *v=&u->cache;
     button(u,r,(Rect){x,y,88,36},"返回设置",ACT_CACHE_BACK,0,false);
@@ -229,16 +231,11 @@ static float caches(Ui *u,Renderer *r,float x,float y,float w) {
     y=wrapped(r,x,y,w,14,TEXT,stats);
     y=wrapped(r,x,y+6,w,12,ACCENT,v->message); y+=14;
     y=wrapped(r,x,y,w,12,MUTED,"Music/LXMusicC/音源/歌手 - 歌名；点击歌曲离线播放"); y+=12;
-    const int limits[]={256,512,1024,2048}; float bw=(w-18)/4;
-    for(int i=0;i<4;++i) {
-        char label[24]; snprintf(label,sizeof(label),"%d MiB",limits[i]);
-        button(u,r,(Rect){x+i*(bw+6),y,bw,34},label,ACT_CACHE_LIMIT,limits[i],v->limit==(uint64_t)limits[i]*CACHE_MIB);
-    }
-    y+=44;
+    y=cache_limits(u,r,x,y,w);
     button(u,r,(Rect){x,y,w,34},u->cache_clear_confirm?"确认清空全部缓存":"清空缓存",ACT_CACHE_CLEAR,0,false); y+=46;
     if(!v->total) {
         render_rect(r,(Rect){x,y,w,92},16,CARD);
-        center(r,(Rect){x,y+10,w,32},18,TEXT,"暂无离线缓存");
+        center(r,(Rect){x,y+10,w,32},18,TEXT,v->busy?"正在读取缓存…":"暂无离线缓存");
         center(r,(Rect){x,y+47,w,28},12,MUTED,"先搜索播放，再点击缓存当前歌曲");
         return y+110-start;
     }
@@ -263,21 +260,41 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
     if(u->cache_open) return caches(u,r,x,y,w);
     if(u->source_open) return sources(u,r,x,y,w);
     float start=y;
-    render_rect(r,(Rect){x,y,w,90},20,TINT);
-    text(r,x+18,y+34,20,TEXT,"LX Music C"); text(r,x+18,y+63,13,ACCENT,"0.1.0  /  音源管理"); y+=112;
-    const char *titles[]={"音源管理","缓存管理","仅 Wi-Fi 下载","主题外观","后台播放","数据与隐私","关于"};
+    render_rect(r,(Rect){x,y,w,82},20,TINT);
+    text(r,x+18,y+32,20,TEXT,"LX Music C"); text(r,x+18,y+60,13,ACCENT,"0.1.0 / 设置"); y+=96;
+    y=wrapped(r,x,y,w,12,ACCENT,u->settings.message); y+=10;
+    button(u,r,(Rect){x,y,w,32},u->settings.busy?"正在保存…":"重试保存设置",ACT_PREF_RETRY,0,false); y+=44;
+    const char *titles[]={"音源管理","缓存管理","仅 Wi-Fi 下载","主题色","后台播放","数据与隐私","关于"};
+    const char *themes[]={"深色 / 薄荷绿","深色 / 天空蓝","深色 / 淡紫色"};
     char source_count[64]; snprintf(source_count,sizeof(source_count),"%d 个音源 / 点击管理",u->sources.count);
-    char cache_count[80]; snprintf(cache_count,sizeof(cache_count),"%d 首 / %.1f MiB / 点击管理",u->cache.total,(double)u->cache.bytes/CACHE_MIB);
-    const char *values[]={source_count,cache_count,"尚未开放","深色 / 薄荷绿","播放服务与通知","本地优先","音源导入"};
-    const char *details[]={"粘贴导入与音源管理","公共 Music 目录 / 离线播放","仅 Wi-Fi 限制尚未开放","当前提供固定深色主题","支持通知栏、锁屏与耳机控制","导入不执行；搜索与自检运行可信音源并联网","纯 C 界面 · Android 8.0 及以上"};
+    char cache_count[96]; snprintf(cache_count,sizeof(cache_count),"%d 首 / %.1f MiB / 上限 %llu MiB",u->cache.total,
+        (double)u->cache.bytes/CACHE_MIB,(unsigned long long)(u->cache.limit/CACHE_MIB));
+    const char *values[]={source_count,cache_count,u->settings.wifi_only?"已开启 / 点击关闭":"已关闭 / 点击开启",
+        themes[u->settings.theme],"播放服务与通知","本地优先","LXMusicC 0.1.0 / Android 8.0+"};
+    const char *details[]={"粘贴导入与音源管理","公共 Music 目录 / 离线播放", "", "",
+        "支持通知栏、锁屏与耳机控制；输出跟随系统；来电暂时打断可恢复",
+        "数据保存在本机；音源导入不执行，搜索和自检会运行可信脚本并联网；清除应用数据会丢失列表与设置",
+        "纯 C 音乐播放器，兼容部分 LX 自定义音源；示例只提供短预览。字体 Noto Sans SC（OFL），QuickJS（MIT），stb_image（MIT / 公有领域）。仅运行可信音源"};
     for(int i=0;i<7;++i) {
         bool selected=u->state.settings_row==i;
-        float h=selected?112:78;
-        render_rect(r,(Rect){x,y,w,h},16,selected?TINT:CARD);
-        text(r,x+16,y+29,16,TEXT,titles[i]); text(r,x+16,y+55,12,MUTED,values[i]);
-        text(r,x+w-28,y+41,18,ACCENT,selected?"-":"+");
-        if(selected) text(r,x+16,y+89,12,ACCENT,details[i]);
-        hit(u,(Rect){x,y,w,h},i==0?ACT_SOURCE_OPEN:i==1?ACT_CACHE_OPEN:ACT_SETTING,i); y+=h+10;
+        render_rect(r,(Rect){x,y,w,78},16,selected?TINT:CARD);
+        text(r,x+16,y+29,16,TEXT,titles[i]); fitted(r,x+16,y+55,w-56,12,MUTED,values[i]);
+        text(r,x+w-28,y+41,18,ACCENT,i<2?">":i==2?"~":selected?"-":"+");
+        hit(u,(Rect){x,y,w,78},i==0?ACT_SOURCE_OPEN:i==1?ACT_CACHE_OPEN:i==2?ACT_PREF_WIFI:ACT_SETTING,i);
+        y+=88;
+        if(i==1) {
+            text(r,x,y+16,13,TEXT,"缓存上限（自动保存）"); y=cache_limits(u,r,x,y+28,w);
+            y=wrapped(r,x+4,y,w-8,12,MUTED,u->cache.message); y+=14;
+        }
+        if(i==2) {
+            y=wrapped(r,x+4,y,w-8,12,MUTED,"开启后仅在已联网的非计费 Wi-Fi 缓存音频；网络切换会中止下载，可手动重试。不限制搜索、封面或在线播放"); y+=14;
+        }
+        if(i==3) {
+            const char *names[]={"薄荷绿","天空蓝","淡紫色"}; float bw=(w-12)/3;
+            for(int k=0;k<3;++k) button(u,r,(Rect){x+k*(bw+6),y,bw,36},names[k],ACT_PREF_THEME,k,u->settings.theme==k);
+            y+=50;
+        }
+        if(selected && details[i][0]) { y=wrapped(r,x+8,y,w-16,12,ACCENT,details[i]); y+=16; }
     }
     return y-start+12;
 }
@@ -322,7 +339,7 @@ void ui_draw(Ui *u,Renderer *r,double now) {
     if(u->toast_until>now) {
         float tw=fminf(a.w-32,render_text_width(u->toast,12)+28);
         Rect t={a.x+(a.w-tw)/2,nav_y-62,tw,44};
-        render_rect(r,t,14,LINE); center(r,t,12,TEXT,u->toast);
+        render_rect(r,t,14,LINE); fitted(r,t.x+12,t.y+27,t.w-24,12,TEXT,u->toast);
     }
     render_flush(r);
 }
@@ -387,6 +404,10 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
             case ACT_FILTER: u->state.library_filter=h.value; break;
             case ACT_CHIP: u->state.search_chip=u->state.search_chip==h.value?-1:h.value; break;
             case ACT_SETTING: u->state.settings_row=u->state.settings_row==h.value?-1:h.value; break;
+            case ACT_PREF_WIFI: case ACT_PREF_THEME: case ACT_PREF_RETRY:
+                if(!settings_command(h.action==ACT_PREF_WIFI?SETTINGS_WIFI:h.action==ACT_PREF_THEME?SETTINGS_THEME:SETTINGS_RETRY,
+                    h.action==ACT_PREF_WIFI?!u->settings.wifi_only:h.value)) notice(u,"设置尚未就绪，请稍后重试",now);
+                break;
             case ACT_NOTICE: notice(u,h.value?"搜索输入将在后续开放":"音乐库功能将在后续开放",now); break;
             case ACT_SOURCE_OPEN: u->state.tab=3; u->cache_open=false; u->source_open=true; u->state.scroll[3]=0; u->delete_id=0; break;
             case ACT_SEARCH_INPUT: u->input_open=!u->input_open; u->state.scroll[1]=0; break;

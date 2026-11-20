@@ -237,6 +237,7 @@ void android_main(struct android_app *app) {
     }
     ui_library_refresh(&e.ui);
     playback_view(&e.ui.playback); ui_player_sync(&e.ui);
+    bool settings_started=settings_start(app->activity->internalDataPath,source_wake,app->activity);
     bool cover_started=cover_start(app->activity->internalDataPath,source_wake,app->activity);
     bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
     bool search_started=search_start(source_bridge_search_http,source_wake,app->activity);
@@ -274,6 +275,7 @@ void android_main(struct android_app *app) {
         }
         if(e.ui.playback_requested) { e.ui.playback_requested=false; playback_ensure(app->activity); }
         if(library_view(&e.ui.library)) { ui_library_sync(&e.ui); e.dirty=true; }
+        if(settings_view(&e.ui.settings)) { settings_palette(e.ui.settings.theme); e.dirty=true; }
         if(cache_view(&e.ui.cache)) e.dirty=true;
         if(source_view(&e.ui.sources)) e.dirty=true;
         if(search_view(&e.ui.search)) { ui_search_sync(&e.ui); e.dirty=true; }
@@ -294,6 +296,7 @@ void android_main(struct android_app *app) {
     if(cover_started) cover_stop();
     free(e.cover.pixels);
     if(cache_started) cache_stop();
+    if(settings_started) settings_stop();
     if(search_started) search_stop();
     if(sources_started) source_stop();
     engine_destroy(&e); pthread_join(e.loader,NULL); free(e.atlas);

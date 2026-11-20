@@ -80,6 +80,7 @@ void render_destroy(Renderer *r) {
 void render_begin(Renderer *r, int width, int height, float scale) {
     r->width = width/scale; r->height = height/scale; r->scale = scale;
     r->pixel_w = width; r->pixel_h = height; r->count = 0;
+    r->clip=(Rect){0,0,r->width,r->height};
     glViewport(0,0,width,height); glDisable(GL_SCISSOR_TEST);
     glClearColor(0.035f,0.047f,0.065f,1); glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -96,17 +97,21 @@ void render_flush(Renderer *r) {
 }
 
 void render_clip(Renderer *r, Rect rect) {
-    render_flush(r); glEnable(GL_SCISSOR_TEST);
+    render_flush(r); r->clip=rect; glEnable(GL_SCISSOR_TEST);
     int x = (int)ceilf(fmaxf(0,rect.x*r->scale));
     int top = (int)ceilf(fmaxf(0,rect.y*r->scale));
     int right = (int)floorf(fminf(r->pixel_w,(rect.x+rect.w)*r->scale));
     int bottom = (int)floorf(fminf(r->pixel_h,(rect.y+rect.h)*r->scale));
     glScissor(x, r->pixel_h-bottom, right>x?right-x:0, bottom>top?bottom-top:0);
 }
-void render_unclip(Renderer *r) { render_flush(r); glDisable(GL_SCISSOR_TEST); }
+void render_unclip(Renderer *r) {
+    render_flush(r); glDisable(GL_SCISSOR_TEST); r->clip=(Rect){0,0,r->width,r->height};
+}
 
 static void quad(Renderer *r, Rect b, Rect uv, float radius, Color c, float mode) {
-    if (b.w <= 0 || b.h <= 0) return;
+    Rect cull=r->clip;
+    if (b.w <= 0 || b.h <= 0 || b.x>=cull.x+cull.w || b.x+b.w<=cull.x ||
+        b.y>=cull.y+cull.h || b.y+b.h<=cull.y) return;
     if (r->count+6 > RENDER_QUADS*6) render_flush(r);
     const int corners[6] = {0,1,2,0,2,3};
     for (int i=0; i<6; ++i) {
@@ -181,4 +186,20 @@ void render_text(Renderer *r, float x, float baseline, float size, Color color, 
 }
 float render_text_width(const char *text, float size) {
     float w=0; while (*text) w+=glyph(next_cp(&text))->advance*size/40; return w;
+}
+float render_paragraph(Renderer *r,float x,float y,float w,float size,Color color,const char *text) {
+    char line[1028]; size_t n=0; float width=0;
+    for(const char *p=text;;) {
+        const char *next=p;
+        uint32_t cp=*p?next_cp(&next):0;
+        size_t step=(size_t)(next-p);
+        float advance=cp?glyph(cp)->advance*size/40:0;
+        if(!cp || cp=='\n' || n+step>=sizeof(line) || (n && width+advance>w)) {
+            line[n]=0; render_text(r,x,y+size,size,color,line); y+=size+7; n=0; width=0;
+            if(!cp) break;
+            if(cp=='\n') { p=next; continue; }
+        }
+        memcpy(line+n,p,step); n+=step; width+=advance; p=next;
+    }
+    return y;
 }
