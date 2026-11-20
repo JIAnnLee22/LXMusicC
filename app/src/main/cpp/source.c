@@ -12,6 +12,8 @@ typedef struct { SourceMeta meta; char *script; } Entry;
 typedef struct { Entry entries[SOURCE_LIMIT]; int count; uint32_t next_id; } Store;
 static struct {
     pthread_mutex_t lock;
+    pthread_mutex_t store_lock;
+    Store *store;
     pthread_cond_t cond;
     pthread_t thread;
     bool running, pending, thread_started;
@@ -24,7 +26,25 @@ static struct {
     RuntimeHttp http;
     SourceWake wake;
     void *context;
-} service={.lock=PTHREAD_MUTEX_INITIALIZER,.cond=PTHREAD_COND_INITIALIZER};
+} service={.lock=PTHREAD_MUTEX_INITIALIZER,.store_lock=PTHREAD_MUTEX_INITIALIZER,.cond=PTHREAD_COND_INITIALIZER};
+
+int source_snapshot(SourceScript items[SOURCE_LIMIT],char error[256]) {
+    int count=0;
+    pthread_mutex_lock(&service.store_lock);
+    if(!service.store) { snprintf(error,256,"音源尚未加载，请稍后重试"); count=-1; }
+    else for(int i=0;i<service.store->count;++i) {
+        Entry *e=&service.store->entries[i];
+        if(!e->meta.enabled) continue;
+        char *copy=strdup(e->script);
+        if(!copy) {
+            for(int k=0;k<count;++k) free(items[k].script);
+            count=-1; snprintf(error,256,"音源快照内存不足，请重试"); break;
+        }
+        items[count++]=(SourceScript){e->meta,copy};
+    }
+    pthread_mutex_unlock(&service.store_lock);
+    return count;
+}
 
 static void publish(const Store *s,const char *message) {
     pthread_mutex_lock(&service.lock);
@@ -198,6 +218,7 @@ static void *worker(void *unused) {
     char error[256]="复制音源链接、JSON 或 JS 文件内容后点击粘贴导入";
     bool writable=load(store,error);
     if(writable && store->count) snprintf(error,sizeof(error),"已恢复 %d 个音源及启用状态、顺序",store->count);
+    pthread_mutex_lock(&service.store_lock); service.store=store; pthread_mutex_unlock(&service.store_lock);
     publish(store,error);
     for(;;) {
         pthread_mutex_lock(&service.lock);
@@ -207,11 +228,17 @@ static void *worker(void *unused) {
         service.input=NULL; service.pending=false;
         pthread_mutex_unlock(&service.lock);
         if(action==SOURCE_CHECK) selfcheck(store,id,error);
-        else if(writable) change(store,action,id,input,error);
+        else if(writable) {
+            pthread_mutex_lock(&service.store_lock);
+            change(store,action,id,input,error);
+            pthread_mutex_unlock(&service.store_lock);
+        }
         else snprintf(error,256,"音源存储损坏，未覆盖原文件；请备份后清除应用数据");
         free(input); publish(store,error);
     }
+    pthread_mutex_lock(&service.store_lock); service.store=NULL;
     for(int i=0;i<store->count;++i) free(store->entries[i].script);
+    pthread_mutex_unlock(&service.store_lock);
     free(store); return NULL;
 }
 bool source_start(const char *directory,SourceFetch fetch,RuntimeHttp http,SourceWake wake,void *context) {

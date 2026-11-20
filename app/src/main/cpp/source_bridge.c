@@ -1,5 +1,6 @@
 #include "source_bridge.h"
 #include "source.h"
+#include "search.h"
 #include <android/log.h>
 #include <jni.h>
 #include <stdio.h>
@@ -20,13 +21,13 @@ static JNIEnv *attach(ANativeActivity *activity,bool *detach) {
     } else if(result!=JNI_OK) return NULL;
     return env;
 }
-bool source_bridge_paste(ANativeActivity *activity) {
+bool source_bridge_paste(ANativeActivity *activity,bool search_input) {
     bool detach,ok=false; JNIEnv *env=attach(activity,&detach);
     if(!env) goto fail;
     if((*env)->PushLocalFrame(env,4)<0) { checked(env); goto end; }
     jclass cls=(*env)->GetObjectClass(env,activity->clazz);
     if(!checked(env) || !cls) goto pop;
-    jmethodID method=(*env)->GetMethodID(env,cls,"requestSourcePaste","()Z");
+    jmethodID method=(*env)->GetMethodID(env,cls,search_input?"requestSearchPaste":"requestSourcePaste","()Z");
     if(!checked(env) || !method) goto pop;
     jboolean result=(*env)->CallBooleanMethod(env,activity->clazz,method);
     ok=checked(env) && result==JNI_TRUE;
@@ -35,7 +36,10 @@ pop:
 end:
     if(detach) (*activity->vm)->DetachCurrentThread(activity->vm);
 fail:
-    if(!ok) source_message("无法读取剪贴板，请重试");
+    if(!ok) {
+        if(search_input) search_paste(NULL,0,"无法读取剪贴板，请重试");
+        else source_message("无法读取剪贴板，请重试");
+    }
     return ok;
 }
 void source_bridge_cancel(ANativeActivity *activity) {
@@ -87,23 +91,24 @@ end:
     if(detach) (*activity->vm)->DetachCurrentThread(activity->vm);
     return output;
 }
-char *source_bridge_http(void *context,const char *request,char error[256]) {
+static char *runtime_http(void *context,const char *request,uint64_t token,char error[256]) {
     ANativeActivity *activity=context;
     bool detach; JNIEnv *env=attach(activity,&detach); char *output=NULL;
     snprintf(error,256,"系统 HTTP 桥接失败，请重试");
     size_t length=strlen(request);
     if(!env) return NULL;
     if((*env)->PushLocalFrame(env,8)<0) { checked(env); goto end; }
-    if(length>SOURCE_BYTES) goto pop;
+    if(length>SOURCE_BYTES) { snprintf(error,256,"HTTP 请求超过 2 MiB"); goto pop; }
     jclass cls=(*env)->GetObjectClass(env,activity->clazz);
     if(!checked(env) || !cls) goto pop;
-    jmethodID method=(*env)->GetMethodID(env,cls,"requestRuntime","([B)[B");
+    jmethodID method=(*env)->GetMethodID(env,cls,token?"requestRuntimeSearch":"requestRuntime",token?"([BJ)[B":"([B)[B");
     if(!checked(env) || !method) goto pop;
     jbyteArray input=(*env)->NewByteArray(env,(jsize)length);
     if(!checked(env) || !input) goto pop;
     (*env)->SetByteArrayRegion(env,input,0,(jsize)length,(const jbyte *)request);
     if(!checked(env)) goto pop;
-    jbyteArray bytes=(*env)->CallObjectMethod(env,activity->clazz,method,input);
+    jbyteArray bytes=token?(*env)->CallObjectMethod(env,activity->clazz,method,input,(jlong)token):
+        (*env)->CallObjectMethod(env,activity->clazz,method,input);
     if(!checked(env) || !bytes) goto pop;
     jsize n=(*env)->GetArrayLength(env,bytes);
     if(!checked(env) || n<=0 || n>(jsize)(SOURCE_BYTES*6u+65536u)) goto pop;
@@ -120,21 +125,37 @@ end:
     if(detach) (*activity->vm)->DetachCurrentThread(activity->vm);
     return output;
 }
-JNIEXPORT void JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativePaste(JNIEnv *env,jobject obj,jbyteArray bytes,jstring error) {
+char *source_bridge_http(void *context,const char *request,char error[256]) {
+    return runtime_http(context,request,0,error);
+}
+char *source_bridge_search_http(void *context,const char *request,uint64_t token,char error[256]) {
+    return runtime_http(context,request,token,error);
+}
+JNIEXPORT jboolean JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativeSearchCancelled(JNIEnv *env,jobject obj,jlong token) {
+    (void)env; (void)obj; return search_is_cancelled((uint64_t)token)?JNI_TRUE:JNI_FALSE;
+}
+static void paste_error(bool search_input,const char *message) {
+    if(search_input) search_paste(NULL,0,message); else source_message(message);
+}
+JNIEXPORT void JNICALL Java_jiannlee22_lxmusicc_SourceActivity_nativePaste(JNIEnv *env,jobject obj,jbyteArray bytes,jstring error,jboolean search_input) {
     (void)obj;
     if(error) {
         const char *message=(*env)->GetStringUTFChars(env,error,NULL);
-        if(checked(env) && message) { source_message(message); (*env)->ReleaseStringUTFChars(env,error,message); }
-        else source_message("读取剪贴板失败，请重试");
+        if(checked(env) && message) { paste_error(search_input,message); (*env)->ReleaseStringUTFChars(env,error,message); }
+        else paste_error(search_input,"读取剪贴板失败，请重试");
         return;
     }
-    if(!bytes) { source_message("剪贴板没有文本"); return; }
+    if(!bytes) { paste_error(search_input,"剪贴板没有文本"); return; }
     jsize n=(*env)->GetArrayLength(env,bytes);
-    if(!checked(env) || n<=0 || n>(jsize)SOURCE_BYTES) { source_message("剪贴板为空或超过 2 MiB"); return; }
+    if(!checked(env) || n<=0 || n>(jsize)(search_input?SEARCH_QUERY_BYTES-1:SOURCE_BYTES)) {
+        paste_error(search_input,search_input?"关键词为空或超过 255 字节":"剪贴板为空或超过 2 MiB"); return;
+    }
     char *data=malloc((size_t)n);
-    if(!data) { source_message("内存不足，请重试"); return; }
+    if(!data) { paste_error(search_input,"内存不足，请重试"); return; }
     (*env)->GetByteArrayRegion(env,bytes,0,n,(jbyte *)data);
-    if(checked(env)) source_command(SOURCE_IMPORT,0,data,(size_t)n);
-    else source_message("读取剪贴板失败，请重试");
+    if(checked(env)) {
+        if(search_input) search_paste(data,(size_t)n,NULL);
+        else source_command(SOURCE_IMPORT,0,data,(size_t)n);
+    } else paste_error(search_input,"读取剪贴板失败，请重试");
     free(data);
 }

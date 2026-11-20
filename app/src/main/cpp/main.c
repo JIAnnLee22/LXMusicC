@@ -169,7 +169,23 @@ static void on_cmd(struct android_app *app,int32_t cmd) {
 static int32_t on_input(struct android_app *app,AInputEvent *event) {
     Engine *e=app->userData; Ui *u=&e->ui;
     if(AInputEvent_getType(event)==AINPUT_EVENT_TYPE_KEY) {
-        if(AKeyEvent_getKeyCode(event)!=AKEYCODE_BACK) return 0;
+        int key=AKeyEvent_getKeyCode(event);
+        if(key!=AKEYCODE_BACK) {
+            if(u->state.tab!=1 || !u->input_open) return 0;
+            if(AKeyEvent_getAction(event)!=AKEY_EVENT_ACTION_DOWN) return 1;
+            int ch=0;
+            bool shift=(AKeyEvent_getMetaState(event)&AMETA_SHIFT_ON)!=0;
+            if(key>=AKEYCODE_A && key<=AKEYCODE_Z) ch=(shift?'A':'a')+key-AKEYCODE_A;
+            else if(key>=AKEYCODE_0 && key<=AKEYCODE_9) ch='0'+key-AKEYCODE_0;
+            else if(key==AKEYCODE_SPACE) ch=' ';
+            else if(key==AKEYCODE_DEL) ch=8;
+            else if(key==AKEYCODE_ENTER || key==AKEYCODE_NUMPAD_ENTER) ch=13;
+            else if(key==AKEYCODE_MINUS) ch='-';
+            else if(key==AKEYCODE_APOSTROPHE) ch='\'';
+            else if(key==AKEYCODE_PERIOD) ch='.';
+            if(ch && ui_search_key(u,ch,seconds())) e->dirty=true;
+            return 1;
+        }
         if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_UP) {
             if(!ui_back(u)) ANativeActivity_finish(app->activity);
             e->dirty=true;
@@ -205,6 +221,7 @@ void android_main(struct android_app *app) {
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
     bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
+    bool search_started=search_start(source_bridge_search_http,source_wake,app->activity);
     double previous=seconds();
     while(!app->destroyRequested) {
         int status=atomic_load_explicit(&e.font_status,memory_order_acquire);
@@ -220,7 +237,9 @@ void android_main(struct android_app *app) {
         if(result>=0 && source) source->process(app,source);
         if(app->destroyRequested) break;
         if(source_view(&e.ui.sources)) e.dirty=true;
-        if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity); }
+        if(search_view(&e.ui.search)) { ui_search_sync(&e.ui); e.dirty=true; }
+        if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity,false); }
+        if(e.ui.search_paste_requested) { e.ui.search_paste_requested=false; source_bridge_paste(app->activity,true); }
         now=seconds(); float dt=(float)fmin(now-previous,.05); previous=now;
         if(app->window && e.ready && e.resumed && e.focused) {
             bool moved=ui_tick(&e.ui,dt);
@@ -229,7 +248,9 @@ void android_main(struct android_app *app) {
             }
         }
     }
-    if(sources_started) { source_bridge_cancel(app->activity); source_stop(); }
+    source_bridge_cancel(app->activity);
+    if(search_started) search_stop();
+    if(sources_started) source_stop();
     engine_destroy(&e); pthread_join(e.loader,NULL); free(e.atlas);
     LOGI("native activity finished");
 }

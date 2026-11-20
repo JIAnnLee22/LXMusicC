@@ -31,4 +31,7 @@ void source_stop(void);
 bool source_command(int action,uint32_t id,const char *input,size_t length);
 void source_message(const char *message);
 bool source_view(SourceView *view);
+typedef struct { SourceMeta meta; char *script; } SourceScript;
+/* 仅后台调用；启用音源深拷贝，调用者逐项 free(script)。加载未完成返回 -1。 */
+int source_snapshot(SourceScript items[SOURCE_LIMIT],char error[256]);
 #endif

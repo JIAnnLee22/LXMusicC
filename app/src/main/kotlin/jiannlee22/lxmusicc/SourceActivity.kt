@@ -11,7 +11,8 @@ import java.net.URI
 /** 仅系统剪贴板和 HTTP；没有 View、解析或音源业务状态。 */
 class SourceActivity : NativeActivity() {
     @Volatile private var closing = false
-    private external fun nativePaste(data: ByteArray?, error: String?)
+    private external fun nativePaste(data: ByteArray?, error: String?, search: Boolean)
+    private external fun nativeSearchCancelled(token: Long): Boolean
 
     override fun onDestroy() {
         closing = true
@@ -23,7 +24,13 @@ class SourceActivity : NativeActivity() {
     /** C 工作线程调用；标准 UTF-8 JSON 字节，不使用 JNI modified UTF-8。 */
     fun requestRuntime(data: ByteArray): ByteArray = RuntimeHttp.execute(data) { closing }
 
-    fun requestSourcePaste(): Boolean {
+    fun requestRuntimeSearch(data: ByteArray, token: Long): ByteArray =
+        RuntimeHttp.execute(data) { closing || nativeSearchCancelled(token) }
+
+    fun requestSourcePaste(): Boolean = requestPaste(false)
+    fun requestSearchPaste(): Boolean = requestPaste(true)
+
+    private fun requestPaste(search: Boolean): Boolean {
         if (closing) return false
         runOnUiThread {
             if (closing || isFinishing || isDestroyed) return@runOnUiThread
@@ -33,16 +40,17 @@ class SourceActivity : NativeActivity() {
                 // 不调用 coerceToText：它可能在主线程读取 ContentProvider 文件。
                 val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).text else null
                 if (text == null || text.isEmpty()) {
-                    nativePaste(null, "剪贴板没有文本，请复制链接或文件内容")
-                } else if (text.length > LIMIT) {
-                    nativePaste(null, "剪贴板内容超过 2 MiB")
+                    nativePaste(null, "剪贴板没有文本，请先复制内容", search)
+                } else if (text.length > if (search) 255 else LIMIT) {
+                    nativePaste(null, if (search) "关键词超过 255 字节" else "剪贴板内容超过 2 MiB", search)
                 } else {
                     val bytes = text.toString().toByteArray(Charsets.UTF_8)
-                    if (bytes.size > LIMIT) nativePaste(null, "剪贴板内容超过 2 MiB")
-                    else nativePaste(bytes, null)
+                    if (bytes.size > if (search) 255 else LIMIT)
+                        nativePaste(null, if (search) "关键词超过 255 字节" else "剪贴板内容超过 2 MiB", search)
+                    else nativePaste(bytes, null, search)
                 }
             } catch (_: Exception) {
-                nativePaste(null, "读取剪贴板失败，请回到应用前台后重试")
+                nativePaste(null, "读取剪贴板失败，请回到应用前台后重试", search)
             }
         }
         return true
