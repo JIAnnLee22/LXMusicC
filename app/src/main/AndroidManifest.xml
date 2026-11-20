@@ -10,14 +10,15 @@
 
     <application
         android:allowBackup="false"
-        android:hasCode="false"
+        android:hasCode="true"
+        android:usesCleartextTraffic="true"
         android:label="@string/app_name"
         android:supportsRtl="false"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
-        <!-- 纯 C 界面：只有 NativeActivity。加 Kotlin 桥接时把 hasCode 改成 true。 -->
+        <!-- NativeActivity 子类仅提供系统剪贴板与 HTTP 桥接，无 Kotlin UI。 -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".SourceActivity"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|density|uiMode|navigation"
             android:exported="true"
             android:enableOnBackInvokedCallback="false"

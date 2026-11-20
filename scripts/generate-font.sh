@@ -7,9 +7,17 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 python3 - "$TMP/codepoints" <<'PY'
 import pathlib, re, sys
-source = pathlib.Path('app/src/main/cpp/ui.c').read_text()
+source = '\n'.join(p.read_text() for p in pathlib.Path('app/src/main').rglob('*')
+                   if p.suffix in ('.c', '.kt') and p.name != 'font_data.h')
 text = ''.join(re.findall(r'"(?:\\.|[^"\\])*"', source))
 chars = set(range(32, 127)) | {ord(c) for c in text if ord(c) > 127}
+# GB2312 的 6763 个汉字覆盖常见音源名称/描述，罕见字仍回退为 ?。
+for high in range(0xb0, 0xf8):
+    for low in range(0xa1, 0xff):
+        try:
+            chars.add(ord(bytes((high, low)).decode('gb2312')))
+        except UnicodeDecodeError:
+            pass
 pathlib.Path(sys.argv[1]).write_text('\n'.join(map(str, sorted(chars))))
 PY
 "${CC:-cc}" -O2 scripts/font-atlas.c -lm -o "$TMP/font-atlas"

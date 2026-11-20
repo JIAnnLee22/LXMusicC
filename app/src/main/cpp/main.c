@@ -1,7 +1,8 @@
-// NativeActivity owns the event loop and GL context; only asset IO runs on a worker.
+// NativeActivity owns the event loop and GL context; all disk/network IO runs on workers.
 #include "render.h"
 #include "ui.h"
 #include "platform.h"
+#include "source_bridge.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/keycodes.h>
@@ -36,6 +37,12 @@ typedef struct {
     bool insets_dirty;
 } Engine;
 
+static void source_wake(void *context) {
+    ANativeActivity *activity=context;
+    struct android_app *app=activity->instance;
+    if(app && app->looper) ALooper_wake(app->looper);
+}
+
 static double seconds(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
     return t.tv_sec+t.tv_nsec*1e-9;
@@ -45,16 +52,16 @@ static void *load_font(void *arg) {
     Engine *e=arg;
     AAsset *a=AAssetManager_open(e->app->activity->assetManager,"fonts/ui.sdf",AASSET_MODE_STREAMING);
     bool ok=false;
-    if(a && AAsset_getLength(a)==1024*1024) {
-        e->atlas=malloc(1024*1024);
+    if(a && AAsset_getLength(a)==FONT_ATLAS_BYTES) {
+        e->atlas=malloc(FONT_ATLAS_BYTES);
         if(e->atlas) {
             size_t done=0;
-            while(done<1024*1024) {
-                int n=AAsset_read(a,e->atlas+done,1024*1024-done);
+            while(done<FONT_ATLAS_BYTES) {
+                int n=AAsset_read(a,e->atlas+done,FONT_ATLAS_BYTES-done);
                 if(n<=0) break;
                 done+=(size_t)n;
             }
-            ok=done==1024*1024;
+            ok=done==FONT_ATLAS_BYTES;
         }
     }
     if(a) AAsset_close(a);
@@ -197,6 +204,7 @@ void android_main(struct android_app *app) {
     ui_init(&e.ui,restore); atomic_init(&e.font_status,0);
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
+    bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_wake,app->activity);
     double previous=seconds();
     while(!app->destroyRequested) {
         int status=atomic_load_explicit(&e.font_status,memory_order_acquire);
@@ -211,6 +219,8 @@ void android_main(struct android_app *app) {
         if(result==ALOOPER_POLL_ERROR) { LOGE("looper failed"); break; }
         if(result>=0 && source) source->process(app,source);
         if(app->destroyRequested) break;
+        if(source_view(&e.ui.sources)) e.dirty=true;
+        if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity); }
         now=seconds(); float dt=(float)fmin(now-previous,.05); previous=now;
         if(app->window && e.ready && e.resumed && e.focused) {
             bool moved=ui_tick(&e.ui,dt);
@@ -219,6 +229,7 @@ void android_main(struct android_app *app) {
             }
         }
     }
+    if(sources_started) { source_bridge_cancel(app->activity); source_stop(); }
     engine_destroy(&e); pthread_join(e.loader,NULL); free(e.atlas);
     LOGI("native activity finished");
 }

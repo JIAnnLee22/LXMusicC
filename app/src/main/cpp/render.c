@@ -60,7 +60,7 @@ bool render_create(Renderer *r, const unsigned char *atlas) {
         glVertexAttribPointer(i, sizes[i], GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsets[i]);
     }
     glGenTextures(1, &r->atlas); glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, r->atlas);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1024, 1024, 0, GL_RED, GL_UNSIGNED_BYTE, atlas);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, atlas);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -145,7 +145,8 @@ void render_text(Renderer *r, float x, float baseline, float size, Color color, 
     while (*text) {
         const Glyph *g=glyph(next_cp(&text));
         quad(r,(Rect){x+g->xo*s,baseline+g->yo*s,g->w*s,g->h*s},
-            (Rect){g->x/1024.f,g->y/1024.f,g->w/1024.f,g->h/1024.f},0,color,1);
+            (Rect){g->x/(float)FONT_ATLAS_SIZE,g->y/(float)FONT_ATLAS_SIZE,
+                g->w/(float)FONT_ATLAS_SIZE,g->h/(float)FONT_ATLAS_SIZE},0,color,1);
         x+=g->advance*s;
     }
 }

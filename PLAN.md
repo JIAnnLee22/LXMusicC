@@ -11,7 +11,7 @@
   - 深色主题 + 强调色；竖屏/横屏都能正常布局；返回键处理
   - 验收：`scripts/build.sh` 通过；启动后能看到完整界面，页签切换不闪、不崩
 
-- [ ] `02-lx-source-import` LX 音源导入与元数据解析
+- [x] `02-lx-source-import` LX 音源导入与元数据解析
   - 支持粘贴音源链接/JSON/文件内容导入；纯 C 解析 LX 音源脚本的注释元数据（name/description/version/author/homepage）
   - 音源列表：启用/禁用、删除、排序；导入失败给出可读错误
   - 音源持久化到应用私有目录；重启后仍在

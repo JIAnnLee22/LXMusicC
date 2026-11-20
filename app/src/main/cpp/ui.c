@@ -8,7 +8,9 @@ static const Color CARD={.075f,.094f,.12f,1}, LINE={.13f,.17f,.21f,1};
 static const Color ACCENT={.34f,.88f,.72f,1}, TINT={.08f,.20f,.19f,1};
 static const char *TABS[]={"歌曲","搜索","正在播放","设置"};
 static const char *FILTERS[]={"收藏","最近播放","我的歌单"};
-enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE };
+enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
+    ACT_SOURCE_OPEN, ACT_SOURCE_BACK, ACT_SOURCE_PASTE, ACT_SOURCE_PAGE,
+    ACT_SOURCE_TOGGLE, ACT_SOURCE_DELETE, ACT_SOURCE_UP, ACT_SOURCE_DOWN };
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
 static float clamp(float x,float a,float b) { return fminf(fmaxf(x,a),b); }
@@ -92,8 +94,11 @@ static float search(Ui *u,Renderer *r,float x,float y,float w) {
     y+=62;
     render_rect(r,(Rect){x,y,w,210},20,CARD);
     center(r,(Rect){x,y+20,w,44},28,ACCENT,"♪");
-    center(r,(Rect){x,y+74,w,28},19,TEXT,"还没有可用音源");
-    center(r,(Rect){x,y+108,w,24},13,MUTED,"音源导入与真实搜索将在后续开放");
+    int enabled=0;
+    for(int i=0;i<u->sources.count;++i) if(u->sources.items[i].enabled) ++enabled;
+    char summary[96]; snprintf(summary,sizeof(summary),enabled?"已启用 %d 个音源":"还没有可用音源",enabled);
+    center(r,(Rect){x,y+74,w,28},19,TEXT,summary);
+    center(r,(Rect){x,y+108,w,24},13,MUTED,"可在设置导入音源，真实搜索尚未开放");
     button(u,r,(Rect){x+(w-136)/2,y+151,136,40},"查看设置",ACT_TAB,3,true);
     return y+234-start;
 }
@@ -115,13 +120,76 @@ static float player(Ui *u,Renderer *r,float x,float y,float w) {
     return fmaxf(y+cover,dy+246)-start+20;
 }
 
+// UTF-8 按可用宽度换行，外部元数据不参与格式化或执行。
+static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s) {
+    char line[1028]; size_t n=0;
+    for(const char *p=s;;) {
+        unsigned char c=(unsigned char)*p;
+        size_t step=c<128?1:c>=0xc2&&c<224?2:c>=224&&c<240?3:c>=240&&c<245?4:1;
+        for(size_t k=1;k<step;++k) if(!p[k] || ((unsigned char)p[k]&0xc0)!=0x80) { step=1; break; }
+        if(!c || c=='\n' || n+step>=sizeof(line)) {
+            line[n]=0; text(r,x,y+size,size,color,line); y+=size+7; n=0;
+            if(!c) break;
+            if(c=='\n') { ++p; continue; }
+        }
+        memcpy(line+n,p,step); line[n+step]=0;
+        if(n && render_text_width(line,size)>w) {
+            line[n]=0; text(r,x,y+size,size,color,line); y+=size+7; n=0;
+        }
+        memcpy(line+n,p,step); n+=step; p+=step;
+    }
+    return y;
+}
+static float sources(Ui *u,Renderer *r,float x,float y,float w) {
+    float start=y;
+    button(u,r,(Rect){x,y,88,36},"返回设置",ACT_SOURCE_BACK,0,false);
+    button(u,r,(Rect){x+100,y,w-100,36},u->sources.busy?"处理中…":"粘贴导入",ACT_SOURCE_PASTE,0,!u->sources.busy);
+    y+=50;
+    y=wrapped(r,x,y,w,12,MUTED,"复制 HTTP(S) 链接、JSON 或 JS 文件内容");
+    y=wrapped(r,x,y+4,w,13,ACCENT,u->sources.message); y+=14;
+    if(!u->sources.count) {
+        render_rect(r,(Rect){x,y,w,100},16,CARD);
+        center(r,(Rect){x,y+12,w,30},18,TEXT,"还没有音源");
+        center(r,(Rect){x,y+50,w,28},12,MUTED,"导入只保存脚本，不会执行代码");
+        return y+120-start;
+    }
+    const int page_size=3;
+    int pages=(u->sources.count+page_size-1)/page_size;
+    if(u->source_page>=pages) u->source_page=pages-1;
+    char page[64]; snprintf(page,sizeof(page),"音源 %d 个  /  第 %d / %d 页",u->sources.count,u->source_page+1,pages);
+    text(r,x,y+16,14,TEXT,page); y+=32;
+    if(pages>1) {
+        button(u,r,(Rect){x,y,(w-12)/2,34},"上一页",ACT_SOURCE_PAGE,-1,false);
+        button(u,r,(Rect){x+(w+12)/2,y,(w-12)/2,34},"下一页",ACT_SOURCE_PAGE,1,false); y+=46;
+    }
+    for(int i=u->source_page*page_size;i<u->sources.count && i<(u->source_page+1)*page_size;++i) {
+        SourceMeta *m=&u->sources.items[i];
+        render_rect(r,(Rect){x,y,w,3},1,LINE); y+=16;
+        y=wrapped(r,x+4,y,w-8,18,TEXT,m->name);
+        const char *labels[]={"描述","版本","作者","主页"};
+        const char *values[]={m->description,m->version,m->author,m->homepage};
+        for(int k=0;k<4;++k) {
+            char detail[1100]; snprintf(detail,sizeof(detail),"%s: %s",labels[k],values[k][0]?values[k]:"未提供");
+            y=wrapped(r,x+4,y+5,w-8,12,MUTED,detail);
+        }
+        y+=10; float bw=(w-18)/4;
+        button(u,r,(Rect){x,y,bw,36},m->enabled?"已启用":"已禁用",ACT_SOURCE_TOGGLE,(int)m->id,m->enabled);
+        button(u,r,(Rect){x+bw+6,y,bw,36},"上移",ACT_SOURCE_UP,(int)m->id,false);
+        button(u,r,(Rect){x+2*(bw+6),y,bw,36},"下移",ACT_SOURCE_DOWN,(int)m->id,false);
+        button(u,r,(Rect){x+3*(bw+6),y,bw,36},u->delete_id==m->id?"确认删除":"删除",ACT_SOURCE_DELETE,(int)m->id,false);
+        y+=58;
+    }
+    return y-start;
+}
 static float settings(Ui *u,Renderer *r,float x,float y,float w) {
+    if(u->source_open) return sources(u,r,x,y,w);
     float start=y;
     render_rect(r,(Rect){x,y,w,90},20,TINT);
-    text(r,x+18,y+34,20,TEXT,"LX Music C"); text(r,x+18,y+63,13,ACCENT,"0.1.0  /  界面预览"); y+=112;
+    text(r,x+18,y+34,20,TEXT,"LX Music C"); text(r,x+18,y+63,13,ACCENT,"0.1.0  /  音源管理"); y+=112;
     const char *titles[]={"音源管理","缓存管理","仅 Wi-Fi 下载","主题外观","后台播放","数据与隐私","关于"};
-    const char *values[]={"未添加音源","暂无缓存","尚未开放","深色 / 薄荷绿","尚未开放","本地优先","界面骨架"};
-    const char *details[]={"LX 音源导入将在后续开放","公共音乐目录缓存将在后续开放","下载功能尚未开放","当前提供固定深色主题","播放服务与通知将在后续开放","当前预览不会发起网络请求","纯 C 界面 · Android 8.0 及以上"};
+    char source_count[64]; snprintf(source_count,sizeof(source_count),"%d 个音源 / 点击管理",u->sources.count);
+    const char *values[]={source_count,"暂无缓存","尚未开放","深色 / 薄荷绿","尚未开放","本地优先","音源导入"};
+    const char *details[]={"粘贴导入与音源管理","公共音乐目录缓存将在后续开放","下载功能尚未开放","当前提供固定深色主题","播放服务与通知将在后续开放","仅在链接导入时下载，不执行脚本","纯 C 界面 · Android 8.0 及以上"};
     for(int i=0;i<7;++i) {
         bool selected=u->state.settings_row==i;
         float h=selected?112:78;
@@ -129,7 +197,7 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
         text(r,x+16,y+29,16,TEXT,titles[i]); text(r,x+16,y+55,12,MUTED,values[i]);
         text(r,x+w-28,y+41,18,ACCENT,selected?"-":"+");
         if(selected) text(r,x+16,y+89,12,ACCENT,details[i]);
-        hit(u,(Rect){x,y,w,h},ACT_SETTING,i); y+=h+10;
+        hit(u,(Rect){x,y,w,h},i==0?ACT_SOURCE_OPEN:ACT_SETTING,i); y+=h+10;
     }
     return y-start+12;
 }
@@ -216,12 +284,26 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
         if(!inside(h.rect,x,y) || !inside(h.rect,u->down_x,u->down_y)) continue;
         bool nav=h.rect.y>=u->area.y+u->area.h-68;
         if(!nav && (!inside(u->body,x,y)||!inside(u->body,u->down_x,u->down_y))) continue;
+        if(h.action!=ACT_SOURCE_DELETE) u->delete_id=0;
         switch(h.action) {
             case ACT_TAB: u->state.tab=h.value; u->velocity=0; break;
             case ACT_FILTER: u->state.library_filter=h.value; break;
             case ACT_CHIP: u->state.search_chip=u->state.search_chip==h.value?-1:h.value; break;
             case ACT_SETTING: u->state.settings_row=u->state.settings_row==h.value?-1:h.value; break;
             case ACT_NOTICE: notice(u,h.value?"搜索输入将在后续开放":"音乐库功能将在后续开放",now); break;
+            case ACT_SOURCE_OPEN: u->source_open=true; u->state.scroll[3]=0; u->delete_id=0; break;
+            case ACT_SOURCE_BACK: u->source_open=false; u->state.scroll[3]=0; break;
+            case ACT_SOURCE_PASTE: if(!u->sources.busy) u->paste_requested=true; break;
+            case ACT_SOURCE_PAGE:
+                u->source_page=(int)clamp(u->source_page+h.value,0,fmaxf(0,(u->sources.count-1)/3));
+                u->state.scroll[3]=0; u->delete_id=0; break;
+            case ACT_SOURCE_TOGGLE: source_command(SOURCE_TOGGLE,(uint32_t)h.value,NULL,0); break;
+            case ACT_SOURCE_UP: source_command(SOURCE_UP,(uint32_t)h.value,NULL,0); break;
+            case ACT_SOURCE_DOWN: source_command(SOURCE_DOWN,(uint32_t)h.value,NULL,0); break;
+            case ACT_SOURCE_DELETE:
+                if(u->delete_id==(uint32_t)h.value) { source_command(SOURCE_DELETE,u->delete_id,NULL,0); u->delete_id=0; }
+                else u->delete_id=(uint32_t)h.value;
+                break;
         }
         break;
     }
@@ -230,6 +312,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
 bool ui_back(Ui *u) {
     ui_cancel(u);
     if(u->toast_until>0) { u->toast_until=0; return true; }
+    if(u->state.tab==3 && u->source_open) { u->source_open=false; u->state.scroll[3]=0; return true; }
     if(u->state.tab==3 && u->state.settings_row>=0) { u->state.settings_row=-1; return true; }
     if(u->state.tab!=0) { u->state.tab=0; return true; }
     return false;

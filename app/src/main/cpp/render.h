@@ -10,6 +10,8 @@ typedef struct {
     float pos[2], uv[2], local[2], half[2], color[4], radius, mode;
 } Vertex;
 #define RENDER_QUADS 4096
+#define FONT_ATLAS_SIZE 4096
+#define FONT_ATLAS_BYTES (FONT_ATLAS_SIZE * FONT_ATLAS_SIZE)
 typedef struct {
     GLuint program, vao, vbo, atlas;
     GLint resolution;
@@ -18,7 +20,7 @@ typedef struct {
     Vertex vertices[RENDER_QUADS * 6];
 } Renderer;
 
-// atlas 为 1024x1024 单通道离线 SDF；调用者负责后台读取及释放。
+// atlas 为 FONT_ATLAS_SIZE 方形单通道离线 SDF；调用者负责后台读取及释放。
 bool render_create(Renderer *r, const unsigned char *atlas);
 void render_destroy(Renderer *r);
 void render_begin(Renderer *r, int width, int height, float scale);

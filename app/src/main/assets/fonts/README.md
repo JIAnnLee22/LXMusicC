@@ -17,6 +17,7 @@ python3 -m fontTools.varLib.instancer /tmp/NotoSansSC-VF.ttf wght=400 -o /tmp/No
 ```
 
 - 下载的 VF 字体 SHA-256：`d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964`
-- 图集：1024×1024 单通道 R8，em=40px，padding=5，边缘值 128，distance scale=24。
-- 生成器提取 `ui.c` 的字符串字面量码点并加入 ASCII 32–126，按码点排序；修改文案后必须重跑，缺字/溢出会报错。
+- 图集：4096×4096 单通道 R8（16 MiB），em=40px，padding=5，边缘值 128，distance scale=24。
+- 生成器提取 `app/src/main` 下 C/Kotlin 字符串字面量，加入 ASCII 32–126 与 GB2312 的 6763 个汉字，按码点排序；当前共 6870 个字形，用于常见音源元数据。罕见字、部分繁体及 emoji 仍回退 `?`。
+- 修改文案后必须重跑，缺字/溢出会报错；度量每行打包 16 项，保持生成头文件小于 800 行。
 - SDF 仅支持 TrueType 二次曲线，不要传入 CFF OTF；C 编译器可通过 `CC` 指定。
