@@ -25,6 +25,7 @@ TIMEOUT_SECONDS=4200           # 单轮上限 70 分钟
 ATTEMPTS_PER_ITEM=2            # 同一功能集最多连续尝试次数
 MILESTONE_HOURS=6              # 每 N 小时打一个快照版本
 MILESTONE_NOW=0                # 启动后立刻打一次快照（调试用）
+MILESTONE_ONLY=0               # 只打一次快照然后退出
 MODEL=""                       # 空 = pi 默认模型
 THINKING="high"
 PUSH=1
@@ -63,6 +64,7 @@ pi-loop.sh — 用 Pi 编码代理循环开发本项目（进度见 PLAN.md）
   --attempts N         同一功能集最多尝试次数（默认 2）
   --milestone-hours H  每 H 小时打一个 snapshot 快照（默认 6，0 = 关闭）
   --milestone-now      本轮开始前立刻打一次快照（调试用）
+  --milestone-only     只生成一个快照版本并推送标签，然后退出
   --verify CMD         每轮结束后的验证命令（默认 ./scripts/build.sh）
   --no-push            只提交本地，不 push
   --once               只跑一个功能集后退出
@@ -91,6 +93,7 @@ while [ $# -gt 0 ]; do
         --attempts) ATTEMPTS_PER_ITEM="$2"; shift 2 ;;
         --milestone-hours) MILESTONE_HOURS="$2"; shift 2 ;;
         --milestone-now) MILESTONE_NOW=1; shift ;;
+        --milestone-only) MILESTONE_ONLY=1; shift ;;
         --verify) VERIFY_CMD="$2"; shift 2 ;;
         --no-push) PUSH=0; shift ;;
         --once) ONCE=1; shift ;;
@@ -1029,13 +1032,13 @@ make_milestone() {
         return 0
     fi
 
+    if [ "$DRY_RUN" = 1 ]; then
+        log "[dry-run] 生成 docs/MILESTONE-LATEST.md 并打标签 $tag"
+        return 0
+    fi
     write_summary "$tag" "$kind"
     git -C "$PROJECT_DIR" add -A
     git -C "$PROJECT_DIR" commit -q -m "chore(milestone): $tag 总结快照" || true
-    if [ "$DRY_RUN" = 1 ]; then
-        log "[dry-run] git tag $tag && push"
-        return 0
-    fi
     git -C "$PROJECT_DIR" tag -a "$tag" -m "$tag 里程碑"
     push_branch
     if git -C "$PROJECT_DIR" push -q origin "$tag" 2>/dev/null; then
@@ -1195,6 +1198,12 @@ main() {
     log "模型：${MODEL:-默认}  思考：$THINKING  单轮超时：${TIMEOUT_SECONDS}s  最多轮数：$RUNS_MAX"
     log "快照节奏：每 ${MILESTONE_HOURS} 小时一个 snapshot（0 = 关闭）；push 分支本身不触发构建"
 
+    if [ "$MILESTONE_ONLY" = 1 ]; then
+        log "只生成一个快照版本（--milestone-only）"
+        make_milestone snapshot
+        exit $?
+    fi
+
     local run=0
     while :; do
         if plan_done; then
@@ -1212,6 +1221,11 @@ main() {
         [ -n "$id" ] || die "PLAN.md 解析失败：$line"
 
         log "下一个功能集：${id} — ${title}"
+        if [ "$DRY_RUN" = 1 ]; then
+            run_pi "$(build_prompt "$id" "$title" "" "")" "/dev/null"
+            log "[dry-run] 结束：没有调用模型，也没有改动文件"
+            exit 0
+        fi
         [ "$ONCE" = 1 ] && log "（--once：本轮结束后退出）"
         maybe_milestone
 
