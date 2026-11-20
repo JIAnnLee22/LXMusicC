@@ -984,6 +984,12 @@ write_summary() {
             sed 's/^- \[ \] /- /' <<<"$open_item"
             echo
         fi
+        if grep -qE '^- \[~\] ' "$PROJECT_DIR/PLAN.md"; then
+            echo "## 受阻的功能集"
+            echo
+            grep -E '^- \[~\] ' "$PROJECT_DIR/PLAN.md" | sed 's/^- \[~\] /- /'
+            echo
+        fi
         echo "## 本次里程碑包含的提交"
         echo
         echo '```'
@@ -999,7 +1005,7 @@ write_summary() {
         echo
         echo "## $tag（$([ "$kind" = release ] && echo '正式版' || echo '快照')）"
         echo
-        echo "已完成：$(grep -cE '^- \[[xX]\] ' "$PROJECT_DIR/PLAN.md" || true) / $(grep -cE '^- \[[ xX]\] `' "$PROJECT_DIR/PLAN.md" || true) 个功能集"
+        echo "已完成：$(grep -cE '^- \[[xX]\] ' "$PROJECT_DIR/PLAN.md" || true) / $(grep -cE '^- \[[ xX~]\] `' "$PROJECT_DIR/PLAN.md" || true) 个功能集"
         echo
         echo "<details><summary>提交</summary>"
         echo
@@ -1158,6 +1164,27 @@ run_verify() {
     return "$rc"
 }
 
+mark_item_blocked() {
+    local id="$1" reason="$2"
+    [ "$DRY_RUN" = 1 ] && { log "[dry-run] 标记 $id 受阻：$reason"; return 0; }
+    python3 - "$PROJECT_DIR/PLAN.md" "$id" "$(printf '%s' "$reason" | tr '\n' ' ')" <<'PY'
+import sys
+path, item, reason = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = open(path, encoding='utf-8').read().splitlines(True)
+out = []
+for ln in lines:
+    if ln.startswith('- [ ] `%s`' % item):
+        out.append(ln.replace('- [ ]', '- [~]', 1).rstrip('\n') + '  <!-- 受阻：%s -->\n' % reason)
+    else:
+        out.append(ln)
+open(path, 'w', encoding='utf-8').writelines(out)
+PY
+    git -C "$PROJECT_DIR" add PLAN.md
+    git -C "$PROJECT_DIR" commit -q -m "chore(plan): ${id} 受阻，转下一条（$reason）" || true
+    git -C "$PROJECT_DIR" push -q origin HEAD 2>/dev/null || true
+    warn "已把 ${id} 标记为受阻（- [~]），继续下一个功能集"
+}
+
 auto_commit_if_dirty() {
     local id="$1" title="$2"
     dirty || return 0
@@ -1207,7 +1234,10 @@ main() {
     local run=0
     while :; do
         if plan_done; then
-            log "PLAN.md 全部完成 🎉"
+            log "PLAN.md 没有未处理条目 🎉"
+            if grep -qE '^- \[~\] ' "$PROJECT_DIR/PLAN.md"; then
+                warn "注意：仍有受阻条目（- [~]），详见 PLAN.md / docs/MILESTONES.md"
+            fi
             run_verify "$LOG_DIR/final-build.log" || warn "最后一次构建验证失败，请检查"
             make_milestone release || warn "正式版里程碑没有完成，稍后重试"
             log "下一步：在 GitHub 的 Actions/Releases 里确认 v1.0.0 的安装包"
@@ -1220,6 +1250,11 @@ main() {
         title="$(item_title <<<"$line")"
         [ -n "$id" ] || die "PLAN.md 解析失败：$line"
 
+        if [ -f "$STATE_DIR/stop" ]; then
+            log "检测到 $STATE_DIR/stop：停止循环（已完成的提交都已推送）"
+            push_branch
+            exit 0
+        fi
         log "下一个功能集：${id} — ${title}"
         if [ "$DRY_RUN" = 1 ]; then
             run_pi "$(build_prompt "$id" "$title" "" "")" "/dev/null"
@@ -1279,9 +1314,10 @@ main() {
         done
 
         if [ "$done_item" != 1 ]; then
-            warn "功能集 ${id} 连续 $ATTEMPTS_PER_ITEM 次未完成"
+            warn "功能集 ${id} 连续 $ATTEMPTS_PER_ITEM 次未完成，标记受阻后继续下一条"
             push_branch
-            die "停止：${id} 卡住了。看日志：$LOG_DIR（修好后重跑本脚本会从这一条继续）"
+            mark_item_blocked "$id" "${failure:-连续失败}"
+            maybe_milestone
         fi
 
         if [ "$ONCE" = 1 ]; then
