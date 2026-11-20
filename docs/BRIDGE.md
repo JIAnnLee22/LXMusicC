@@ -63,3 +63,24 @@ HTTP 支持 GET/POST/PUT/DELETE/PATCH/HEAD、请求头和 UTF-8 正文；仅无�
 输入框、字母/数字软键盘、UTF-8 退格和硬件按键编辑均为纯 C；中文通过系统剪贴板输入。不新增 Kotlin View、InputConnection 或输入法 UI。Activity 退出先置 closing，再 search_stop（取消/join 全部任务），最后 source_stop，确保所有工作线程退出后才释放 Activity。
 
 **JVM 装载要求**：Kotlin companion 显式 `System.loadLibrary("lxmusicc")`；NativeActivity 自己的 dlopen 不会把库登记到 JVM ClassLoader 的 native 方法查找表，单靠 manifest 的 `android.app.lib_name` 会导致 nativePaste 出现 UnsatisfiedLinkError。AGP 9 使用内置 Kotlin 支持，无新增 Kotlin 插件/第三方运行时 SDK。
+
+## 前台播放服务（05-playback-service）
+
+实现：`playback.[ch]`、`playback_bridge.[ch]`、`PlaybackService.kt`；服务也显式装载同一个 native 库。所有队列内容为 C 的自包含 SearchItem 值，不携带 Activity 或音源脚本引用。
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| C → SourceActivity | `requestPlaybackStart` | `()Z` | GL/胶水线程调用，投递 Android 主线程 | true=已投递前台用户操作的 startService；false/异常失败，异步失败走 nativeFailure |
+| PlaybackService → C | `nativeReady` | `()Z` | Android 主线程 onCreate | 登记服务 GlobalRef 和 applyPlayback 方法，true=登记成功，C 尝试排入当前曲目；false=登记失败，服务停止，允许前台重试 |
+| PlaybackService → C | `nativeGone` | `()V` | Android 主线程 onDestroy | 删除服务 GlobalRef，断开输出，保留 C 队列/位置，不借用已销毁 Activity |
+| PlaybackStart → C | `nativeFailure` | `()V` | Android 主线程 | 清启动中标记，发布可重试启动错误 |
+| C → PlaybackService | `applyPlayback` | `(I[B[B[BJJZ)Z` | GL 或服务回调线程调用，仅 Handler.post；执行在 Android 主线程 | 参数 action、URL/title/artist 标准 UTF-8 字节数组、positionMs、generation、autoplay；true=已入队，false/异常失败。只有 LOAD 使用三个数组，其余为 null |
+| PlaybackService → C | `nativeCommand` | `(IJ)V` | Android 主线程，媒体会话/耳机按键/解码结束 | action=2 播放、3 暂停、4 seek、5 下一首、6 上一首、7 自然结束、8 停止；Long 为 seek 毫秒，action=7 时为结束曲目的 generation，其余忽略 |
+| PlaybackService → C | `nativeCanSkip` | `(I)Z` | Android 主线程，Media3 查询 | delta=±1，true=目标存在；无 IO、不暴露队列指针 |
+| PlaybackService → C | `nativeState` | `(JIZZJJ[B)V` | Android 主线程，Player.Listener 及播放中每秒 | generation、Media3 state(1..4)、isPlaying、playWhenReady、positionMs、durationMs、可空错误 UTF-8 字节数组；未知时长为 0。C 校验长度≤255/UTF-8/非负值/状态，丢弃旧代次 |
+
+C 的 `playback_bridge_start/apply` 检查 attach/GetObjectClass/GetMethodID/GlobalRef/局部帧/字节数组分配写入/CallBooleanMethod 的结果与异常；清异常并用 LXMusicC 记录，不使用 modified UTF-8 传歌曲元数据。service 全局引用只由 bridge_lock 保护；nativeReady/nativeGone **先释放 bridge_lock，再进入播放锁**。C 调用 apply 时持播放锁，Kotlin 仅 post，禁止同步回调 C，避免重入与锁反转。
+
+播放快照/队列用独立 playback.lock；进度回调只有内容变化才发布。UI 订阅的 ALooper 在锁内 acquire/release，Activity 暂停或退出解除订阅，不让息屏回调唤醒 GL 线程；恢复重新订阅并读取最新快照。服务不持有 Activity，Activity 的 closing、HTTP 取消和 source/search_stop 均不停止播放。进程死亡不恢复队列，也不从后台擅自重启播放。
+
+Media3 负责系统音频焦点与 noisy（拔耳机）处理；瞬态焦点丢失暂停、恢复后继续，永久丢失后手动播放。前台提升失败由 MediaSessionService.Listener 转为暂停和可读错误。媒体会话通知豁免 Android 13 POST_NOTIFICATIONS 运行时授权，因此不请求无关通知权限；服务声明 mediaPlayback 类型及对应前台权限、WAKE_LOCK。外部媒体控制可控制播放/seek/切歌，但不能替换或修改 C 队列。

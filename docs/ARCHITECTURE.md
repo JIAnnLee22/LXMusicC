@@ -149,3 +149,28 @@ C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8
 - 弱网下取消 jazzpiano 立即显示已取消；等待四秒后的截图 SHA-256 与取消时相同（`2db11df4d0a3bf68ea6a1efcb78df51cbd2c68df5e8029d23029810f11a3f40f`），没有迟到结果覆盖；重试代次由 3→5，新轮正常返回。无匹配关键词返回空数组，全部禁用源后显示无启用音源并提供管理入口。
 - 系统剪贴板的关键词粘贴可替换输入，超过 255 字节拒绝并提示；沿用 nativePaste 的导入/搜索区分，无 AndroidRuntime 崩溃。验收结束恢复模拟器原音源文件，SHA-256 与备份一致：`86fce0441f2674f562458e140caeb6e60b89b3a67efc55ee6cd6eb9ad251add9`；网络恢复正常。
 - `git diff --check` 通过；workflow、Manifest、版本号未改，不创建 tag/Release，仅勾选 04。
+
+## 05-playback-service：前台播放与系统媒体控制
+
+| 模块 | 职责 |
+| --- | --- |
+| `playback.[ch]` | 进程级 C 播放队列、加载代次、播放/暂停/前后曲/seek/停止、自然结束策略、状态快照与 UI 订阅 |
+| `playback_bridge.[ch]` | 服务 GlobalRef、JNI 检查/字节传输、异步服务命令、状态与系统控制回调，完整签名见 BRIDGE.md |
+| `PlaybackService.kt` | Media3 ExoPlayer、MediaSessionService/系统通知、焦点/noisy/网络唤醒锁；ForwardingPlayer 将控制交给 C，不保存业务队列 |
+| `SourceActivity.kt` | 用户前台操作时投递服务启动，无绑定和 Activity 播放状态 |
+| `ui.[ch]` / `main.c` | 当前页替换队列、最小控制按钮与实际进度、前后台订阅/恢复，不涉及缓存/封面/拖动条 |
+
+### 状态与线程
+- C 持有有界 SearchItem 深拷贝队列和 PlaybackView，mutex 保护；队列不指向搜索结果/音源存储。选曲、下一首及替换递增加载代次；进度/状态和自然结束均按代次丢弃旧回调，网络地址失败不删除队列，播放可重试。
+- GL 只处理内存快照与 JNI 排队，无网络/磁盘 IO。C→Kotlin applyPlayback 复制最多三个有界 UTF-8 字节数组，再 Handler.post 到服务主线程；主线程修改 ExoPlayer/Session，音频加载、解码和 IO 由 Media3 内部线程运行。系统按钮经 ForwardingPlayer 回 C，C 决策后调用原始 ExoPlayer，不通过 wrapper 递归执行。
+- Media3 只持有当前曲目的单项 timeline；通知的上一首/下一首命令由 wrapper 显式提供，C 决定边界。有下一首的自然结束自动切换；末曲结束关闭播放请求，不循环。seek 按实际音频时长夹取，示例不再把完整歌曲元数据时长当预览长度。
+- Player.Listener 在状态变化时上报，播放中每秒采样进度；C 只发布变化快照。Activity onPause 解绑并 release looper，onResume 重新 acquire/取快照；无界面时不依赖 GL 线程驱动播放。onDestroy 只关闭导入/搜索，服务独立存活；服务销毁清 JNI 引用和输出状态，保留同进程队列供用户前台继续。
+- JNI 锁序为 playback.lock → bridge_lock；nativeReady/nativeGone 先更新/释放 bridge_lock，再调用 C 状态发布。Kotlin apply 只排队不重入 C；回调不借用 Activity 上下文。库在 Activity/Service 各自的类初始化显式 System.loadLibrary，可只由服务装载。
+- Manifest 声明媒体播放前台类型/权限、WAKE_LOCK；服务主动 addSession 以启用自动媒体通知/前台提升，避免没有 MediaController 时只解码而不显示通知。音频焦点与耳机拔出由 Media3 管理，前台提升被拒、播放网络/解码错误均转为可重试文案。
+
+### 本轮验证记录
+- `./scripts/build.sh` 成功，arm64-v8a/x86_64 与 Kotlin 均通过，保留原有非阻塞 CXX5304 提示；自写单文件均满足 C ≤800/Kotlin ≤400 行。没有新增 Java 或测试用例。
+- `aosp_17` x86_64 模拟器通过真实 Apple 搜索与音频请求，选 Love / Keyshia Cole 后 AAC 解码并播放约 30 秒预览；C 页显示实际 0:30 而非搜索元数据 4:15，队列 1/8。通知服务 dumpsys 显示 isForeground=true、mediaPlayback 类型 0x2、foregroundId=1001、三个控制按钮。
+- HOME、息屏后系统会话保持 PLAYING、进度继续；GSM 来电及 accept 后变为 PAUSED，position=18163 ms 保持，cancel 后恢复 PLAYING、position=18179 ms。通知卡片实际点击暂停/下一首有效，元数据从 Lana Del Rey 变为 Destiny's Child；系统媒体键 play/pause/next/headsethook 同样有效。
+- 返回退出 Activity 后日志出现 native activity finished，服务/会话仍在；耳机键恢复后重启 Activity，C 页恢复 Destiny's Child、4/8 及实时进度。暂停时 C seek 将 28383→30023 ms（时长夹取），后退变为 20023 ms；切至末曲及末尾 seek 后按钮可恢复播放，不回到队列头。
+- 关闭 Wi-Fi/移动数据后切新曲显示 ERROR_CODE_IO_NETWORK_CONNECTION_FAILED 与可读重试提示；恢复网络后 play 重新 prepare 并播放同曲。未修改模拟器音源文件，未以本地假响应冒充真实网络；未修改工作流或创建发布标签。

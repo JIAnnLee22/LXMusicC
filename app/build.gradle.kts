@@ -37,3 +37,9 @@ android {
     ndkVersion = "29.0.14206865"
     buildToolsVersion = "36.0.0"
 }
+
+// 05 明确要求 Media3；仅用于系统播放/会话，不引入 Kotlin UI 或原生 SDK。
+dependencies {
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-session:1.8.0")
+}

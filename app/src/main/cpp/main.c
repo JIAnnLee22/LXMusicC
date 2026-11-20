@@ -148,8 +148,8 @@ static void on_cmd(struct android_app *app,int32_t cmd) {
             if(e->ready) engine_destroy(e);
             e->retry_at=0; e->dirty=true; break;
         case APP_CMD_TERM_WINDOW: engine_destroy(e); break;
-        case APP_CMD_RESUME: e->resumed=true; e->dirty=true; break;
-        case APP_CMD_PAUSE: e->resumed=false; ui_cancel(&e->ui); break;
+        case APP_CMD_RESUME: playback_ui(app->looper); e->resumed=true; e->dirty=true; break;
+        case APP_CMD_PAUSE: playback_ui(NULL); e->resumed=false; ui_cancel(&e->ui); break;
         case APP_CMD_GAINED_FOCUS: e->focused=true; e->dirty=true; break;
         case APP_CMD_LOST_FOCUS: e->focused=false; ui_cancel(&e->ui); break;
         case APP_CMD_CONFIG_CHANGED:
@@ -220,6 +220,8 @@ void android_main(struct android_app *app) {
     ui_init(&e.ui,restore); atomic_init(&e.font_status,0);
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
+    playback_ui(app->looper);
+    playback_view(&e.ui.playback);
     bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
     bool search_started=search_start(source_bridge_search_http,source_wake,app->activity);
     double previous=seconds();
@@ -236,6 +238,8 @@ void android_main(struct android_app *app) {
         if(result==ALOOPER_POLL_ERROR) { LOGE("looper failed"); break; }
         if(result>=0 && source) source->process(app,source);
         if(app->destroyRequested) break;
+        if(playback_view(&e.ui.playback)) e.dirty=true;
+        if(e.ui.playback_requested) { e.ui.playback_requested=false; playback_ensure(app->activity); }
         if(source_view(&e.ui.sources)) e.dirty=true;
         if(search_view(&e.ui.search)) { ui_search_sync(&e.ui); e.dirty=true; }
         if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity,false); }
@@ -248,6 +252,7 @@ void android_main(struct android_app *app) {
             }
         }
     }
+    playback_ui(NULL); // 只解除 UI 订阅，进程级队列与前台服务继续播放。
     source_bridge_cancel(app->activity);
     if(search_started) search_stop();
     if(sources_started) source_stop();

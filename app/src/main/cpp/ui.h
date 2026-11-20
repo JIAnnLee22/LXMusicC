@@ -3,6 +3,7 @@
 #include "render.h"
 #include "source.h"
 #include "search.h"
+#include "playback.h"
 #define UI_STATE_VERSION 1u
 typedef struct {
     unsigned version;
@@ -25,10 +26,11 @@ typedef struct {
     int source_page;
     uint32_t delete_id;
     SearchView search;
-    SearchItem selected;
+    PlaybackView playback;
+    bool playback_requested;
     char query[SEARCH_QUERY_BYTES];
     unsigned paste_revision;
-    bool input_open, search_paste_requested, has_selected;
+    bool input_open, search_paste_requested;
 } Ui;
 void ui_init(Ui *ui, const UiState *saved);
 void ui_layout(Ui *ui, Rect area);

@@ -21,6 +21,18 @@ class SourceActivity : NativeActivity() {
 
     fun cancelSourceFetch() { closing = true }
 
+    fun requestPlaybackStart(): Boolean {
+        if (closing) return false
+        runOnUiThread {
+            if (closing || isFinishing || isDestroyed) { PlaybackStart.failed(); return@runOnUiThread }
+            try {
+                // 用户前台选曲时启动，Media3 在准备/播放时负责提升为前台服务。
+                startService(android.content.Intent(this, PlaybackService::class.java))
+            } catch (_: Exception) { PlaybackStart.failed() }
+        }
+        return true
+    }
+
     /** C 工作线程调用；标准 UTF-8 JSON 字节，不使用 JNI modified UTF-8。 */
     fun requestRuntime(data: ByteArray): ByteArray = RuntimeHttp.execute(data) { closing }
 

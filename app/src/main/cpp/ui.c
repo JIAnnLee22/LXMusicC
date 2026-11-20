@@ -12,7 +12,8 @@ enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SOURCE_OPEN, ACT_SOURCE_BACK, ACT_SOURCE_PASTE, ACT_SOURCE_PAGE,
     ACT_SOURCE_TOGGLE, ACT_SOURCE_DELETE, ACT_SOURCE_UP, ACT_SOURCE_DOWN, ACT_SOURCE_CHECK,
     ACT_SEARCH_INPUT, ACT_SEARCH_SUBMIT, ACT_SEARCH_PASTE, ACT_SEARCH_CANCEL,
-    ACT_SEARCH_RETRY, ACT_SEARCH_PAGE, ACT_SEARCH_SELECT, ACT_SEARCH_KEY, ACT_SEARCH_CLOSE };
+    ACT_SEARCH_RETRY, ACT_SEARCH_PAGE, ACT_SEARCH_SELECT, ACT_SEARCH_KEY, ACT_SEARCH_CLOSE,
+    ACT_PLAYBACK, ACT_PLAYBACK_SEEK };
 static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s);
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
@@ -189,23 +190,36 @@ static float player(Ui *u,Renderer *r,float x,float y,float w) {
     render_rect(r,(Rect){cx+cover*.22f,y+cover*.22f,cover*.56f,cover*.56f},cover*.28f,LINE);
     center(r,(Rect){cx,y,cover,cover},58,ACCENT,"♪");
     float dx=wide?x+cover+36:x, dy=wide?y+8:y+cover+20, dw=wide?w-cover-36:w;
-    if(u->has_selected) {
-        fitted(r,dx+12,dy+28,dw-24,22,TEXT,u->selected.song.name);
-        fitted(r,dx+12,dy+63,dw-24,14,MUTED,u->selected.song.artist);
-        fitted(r,dx+12,dy+84,dw-24,11,ACCENT,u->selected.song.quality);
+    PlaybackView *p=&u->playback;
+    if(p->count) {
+        fitted(r,dx+12,dy+28,dw-24,22,TEXT,p->current.song.name);
+        fitted(r,dx+12,dy+63,dw-24,14,MUTED,p->current.song.artist);
+        fitted(r,dx+12,dy+84,dw-24,11,ACCENT,p->current.song.quality);
     } else {
         center(r,(Rect){dx,dy,dw,36},22,TEXT,"还没有正在播放的歌曲");
         center(r,(Rect){dx,dy+42,dw,24},13,MUTED,"选择音乐后，播放信息会显示在这里");
     }
     render_rect(r,(Rect){dx+12,dy+92,dw-24,3},2,LINE);
-    text(r,dx+12,dy+119,11,MUTED,"--:--");
-    char duration[24]="--:--";
-    if(u->has_selected) snprintf(duration,sizeof(duration),"%d:%02d",(int)u->selected.song.duration/60,(int)u->selected.song.duration%60);
+    char position[24],duration[24]="--:--";
+    snprintf(position,sizeof(position),"%lld:%02lld",(long long)p->position/60000,(long long)p->position/1000%60);
+    text(r,dx+12,dy+119,11,MUTED,p->count?position:"--:--");
+    if(p->duration>0) snprintf(duration,sizeof(duration),"%lld:%02lld",(long long)p->duration/60000,(long long)p->duration/1000%60);
     text(r,dx+dw-60,dy+119,11,MUTED,duration);
-    button(u,r,(Rect){dx+(dw-148)/2,dy+144,148,44},"前往搜索",ACT_TAB,1,true);
-    fitted(r,dx+12,dy+224,dw-24,12,MUTED,"音频输出将在前台播放服务开放");
-    if(u->has_selected) fitted(r,dx+12,dy+246,dw-24,11,MUTED,u->selected.source_name);
-    return fmaxf(y+cover,dy+266)-start+20;
+    if(p->count) {
+        float bw=(dw-16)/3;
+        button(u,r,(Rect){dx,dy+140,bw,42},"上一首",ACT_PLAYBACK,PLAYBACK_PREVIOUS,false);
+        button(u,r,(Rect){dx+bw+8,dy+140,bw,42},p->requested&&!p->error[0]?"暂停":"播放",ACT_PLAYBACK,
+            p->requested&&!p->error[0]?PLAYBACK_PAUSE:PLAYBACK_PLAY,true);
+        button(u,r,(Rect){dx+2*bw+16,dy+140,bw,42},"下一首",ACT_PLAYBACK,PLAYBACK_NEXT,false);
+        button(u,r,(Rect){dx,dy+190,(dw-8)/2,32},"后退 10 秒",ACT_PLAYBACK_SEEK,-10,false);
+        button(u,r,(Rect){dx+(dw+8)/2,dy+190,(dw-8)/2,32},"前进 10 秒",ACT_PLAYBACK_SEEK,10,false);
+        const char *status=p->error[0]?p->error:p->playing?"正在播放":p->state==2?"正在加载…":
+            p->state==4?"播放结束":p->requested?"等待音频焦点":"已暂停";
+        fitted(r,dx+12,dy+246,dw-24,12,ACCENT,status);
+        char info[320]; snprintf(info,sizeof(info),"%d / %d  %s",p->index+1,p->count,p->current.source_name);
+        fitted(r,dx+12,dy+266,dw-24,11,MUTED,info);
+    } else button(u,r,(Rect){dx+(dw-148)/2,dy+144,148,44},"前往搜索",ACT_TAB,1,true);
+    return fmaxf(y+cover,dy+286)-start+20;
 }
 
 // UTF-8 按可用宽度换行，外部元数据不参与格式化或执行。
@@ -394,10 +408,18 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
             case ACT_SEARCH_CLOSE: u->input_open=false; break;
             case ACT_SEARCH_SELECT:
                 if(h.value>=0 && h.value<u->search.count) {
-                    u->selected=u->search.items[h.value]; u->has_selected=true;
-                    u->state.tab=2; u->state.scroll[2]=0; u->velocity=0;
+                    // 只复制当前可见的一页，后续搜索/删除音源不修改播放队列。
+                    if(playback_replace(u->search.items,u->search.count,h.value)) {
+                        u->playback_requested=true;
+                        playback_view(&u->playback);
+                        u->state.tab=2; u->state.scroll[2]=0; u->velocity=0;
+                    } else notice(u,"无法创建播放队列，请重试",now);
                 }
                 break;
+            case ACT_PLAYBACK:
+                playback_command(h.value,0); u->playback_requested=true; break;
+            case ACT_PLAYBACK_SEEK:
+                playback_command(PLAYBACK_SEEK,u->playback.position+(int64_t)h.value*1000); break;
             case ACT_SOURCE_BACK: u->source_open=false; u->state.scroll[3]=0; break;
             case ACT_SOURCE_PASTE: if(!u->sources.busy) u->paste_requested=true; break;
             case ACT_SOURCE_PAGE:
