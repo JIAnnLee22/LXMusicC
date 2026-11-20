@@ -20,8 +20,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - uses: android-actions/setup-android@v3
-
+      # 直接用 GitHub runner 预装的 Android SDK（不再依赖 setup-android action）
       - name: Install SDK / NDK packages
         run: bash scripts/setup-android-sdk.sh
 
