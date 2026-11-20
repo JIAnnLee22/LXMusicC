@@ -35,7 +35,8 @@ on(EVENT_NAMES.request, async ({ action, info }) => {
         album: song.collectionName || '',
         duration: (song.trackTimeMillis || 0) / 1000,
         quality: 'preview-aac',
-        url: song.previewUrl
+        url: song.previewUrl,
+        cover: song.artworkUrl100 || ''
       }));
     }
     case 'musicUrl':

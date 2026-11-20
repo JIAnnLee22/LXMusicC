@@ -105,3 +105,18 @@ API29+ 使用 Audio MediaStore、RELATIVE_PATH 与 IS_PENDING：先创建、流�
 下载采用系统 HttpURLConnection，32 KiB 分块；仅 HTTP(S)、禁止凭据和 HTTPS 降级、最多五跳、必须 HTTP200、拒绝常见 HTML/XML/JSON 错误页、空文件及 Content-Length 不完整响应。连接15秒/单次读10秒、复制总时限10分钟（检查点生效）；DNS/阻塞底层调用仍非硬截止。Activity closing 在读块/重定向等检查点取消；退出先 `cancelSourceFetch` 置位，再 `cache_stop` join，之后才释放 Activity。未完成下载不跨 Activity 继续，不影响独立播放服务。
 
 既有 `applyPlayback(I[B[B[BJJZ)Z` 签名不变：C 命中索引时 URL 字节数组改为 content URI，服务和 Media3 负责后台读取/解码，不在 JNI 调用线程打开文件。
+
+## 封面与播放页（07-player-ui）
+
+实现：`cover_bridge.[ch]` → `SourceActivity.kt` → `CoverHttp.kt`；C 后台线程管理封面下载调度、磁盘缓存、解码与缩放，Kotlin 仅传输二进制 HTTP 正文。
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| C → SourceActivity | `requestCover` | `([BJ)[B` | 单个封面 C 工作线程，同步 HTTP | url 为 1..2047 字节 ASCII/百分号 HTTP(S) 地址，token 为非零代次；返回非 null ByteArray，1+原始图片字节（正文 1..2 MiB），或 0+可读 UTF-8 错误 |
+| SourceActivity → C | `nativeCoverCancelled` | `(J)Z` | 同一 HTTP 工作线程，开始/重定向/读块/完成检查点 | 原子比较代次，true=已切换封面、取消或退出；无锁、无 IO |
+
+C 包装 `cover_bridge_fetch(context,url,token,size)` 返回 malloc 图片字节及长度，失败为 NULL/0；检查 GetEnv/attach、局部帧、类/方法查找、数组分配/写入/调用/长度/读取的异常及返回值，错误状态/UTF-8 文本有界校验并记录 LXMusicC。二进制不使用字符串转换，局部帧释放引用，按需 detach。
+
+HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 HTTPS 降级，仅接受 HTTP 200；连接 2 秒/读 1 秒/总 20 秒检查点时限，正文最多 2 MiB。DNS/底层阻塞仍不承诺硬截止。Activity 退出先置既有 closing，再 cover_stop 取消并 join，最后才释放 Activity；没有主/GL 线程网络或磁盘 IO。
+
+播放服务 JNI 签名不变。C 内部命令新增 `PLAYBACK_SELECT=9`（绝对队列索引）和 `PLAYBACK_MODE=10`（0顺序/1列表循环/2单曲循环/3随机），只在 C 消费、不转发 Kotlin；系统 nativeCommand 仍为原有 2..8，nativeCanSkip 采用当前模式边界。`SourceActivity.onCreate` 仅用框架 `volumeControlStream=STREAM_MUSIC`；C 对音量键返回未处理，由系统调节媒体流，Media3 沿用系统输出路由，不新增音量/路由 JNI 或 UI。

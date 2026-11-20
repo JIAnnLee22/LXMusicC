@@ -28,7 +28,14 @@ typedef struct {
     uint32_t delete_id;
     SearchView search;
     PlaybackView playback;
-    bool playback_requested;
+    bool playback_requested, cover_retry_requested, cover_loading;
+    Rect seek_rect, art_rect;
+    bool seeking, queue_open;
+    int queue_page;
+    int64_t seek_position;
+    uint64_t seek_generation, player_generation;
+    double shown_position;
+    float player_appear, cover_fade, queue_mix;
     CacheView cache;
     bool cache_open, cache_clear_confirm;
     uint32_t cache_delete_id;

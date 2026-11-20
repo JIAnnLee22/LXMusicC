@@ -7,6 +7,7 @@
 typedef struct {
     char id[128], name[256], artist[256], album[256], quality[128], url[2048];
     double duration; /* 秒；预览源可返回完整歌曲时长，但 URL 只是预览。 */
+    char cover[2048]; /* 可选 HTTP(S) 封面；缺失时显示占位，不影响播放。 */
 } SourceSong;
 typedef struct {
     SourceSong songs[RUNTIME_SONG_LIMIT];

@@ -7,6 +7,27 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <math.h>
+#include <stddef.h>
+
+/* 06 的 v1 ABI 原样定义，升级封面字段时逐条转换，绝不丢弃已有公共音频。 */
+typedef struct {
+    char id[128],name[256],artist[256],album[256],quality[128],url[2048];
+    double duration;
+} LegacySong;
+typedef struct {
+    LegacySong song;
+    char source_name[256];
+    uint32_t source_id;
+    int source_order,song_order,score;
+} LegacyItem;
+typedef struct {
+    LegacyItem item;
+    char uri[512];
+    uint64_t bytes;
+    uint32_t id;
+} LegacyEntry;
+_Static_assert(sizeof(LegacyEntry)==3880,"v1 cache ABI changed");
+_Static_assert(sizeof(LegacySong)==offsetof(SourceSong,cover),"song prefix changed");
 
 /* 固定64位Android ABI上的版本化记录；头和记录长度均校验，损坏时不覆盖。 */
 typedef struct {
@@ -69,7 +90,7 @@ static bool save(char error[256]) {
     FILE *f=fd>=0?fdopen(fd,"wb"):NULL;
     if(!f) { if(fd>=0) close(fd); goto fail; }
     uint32_t size=sizeof(CacheEntry); Store *s=cache.store;
-    bool ok=fwrite("LXCC\1\0\0\0",1,8,f)==8 && fwrite(&size,4,1,f)==1 &&
+    bool ok=fwrite("LXCC\2\0\0\0",1,8,f)==8 && fwrite(&size,4,1,f)==1 &&
         fwrite(&s->count,4,1,f)==1 && fwrite(&s->next_id,4,1,f)==1 && fwrite(&s->limit,8,1,f)==1 &&
         fwrite(s->entries,sizeof(CacheEntry),s->count,f)==s->count;
     if(ok) ok=fflush(f)==0 && fsync(fd)==0;
@@ -90,11 +111,24 @@ static bool load(char error[256]) {
         snprintf(error,256,"无法读取缓存索引，已停止写入"); return false;
     }
     char magic[8]; uint32_t size;
-    bool ok=fread(magic,1,8,f)==8 && !memcmp(magic,"LXCC\1\0\0\0",8) && fread(&size,4,1,f)==1 &&
-        size==sizeof(CacheEntry) && fread(&s->count,4,1,f)==1 && s->count<=CACHE_LIMIT &&
+    bool ok=fread(magic,1,8,f)==8;
+    bool legacy=ok && !memcmp(magic,"LXCC\1\0\0\0",8);
+    ok=ok && (legacy || !memcmp(magic,"LXCC\2\0\0\0",8)) && fread(&size,4,1,f)==1 &&
+        size==(legacy?sizeof(LegacyEntry):sizeof(CacheEntry)) && fread(&s->count,4,1,f)==1 && s->count<=CACHE_LIMIT &&
         fread(&s->next_id,4,1,f)==1 && s->next_id>0 && fread(&s->limit,8,1,f)==1 &&
-        s->limit>=64*CACHE_MIB && s->limit<=16*1024*CACHE_MIB &&
-        fread(s->entries,sizeof(CacheEntry),s->count,f)==s->count;
+        s->limit>=64*CACHE_MIB && s->limit<=16*1024*CACHE_MIB;
+    for(uint32_t i=0;ok && i<s->count;++i) {
+        CacheEntry *e=&s->entries[i];
+        if(!legacy) { ok=fread(e,sizeof(*e),1,f)==1; continue; }
+        LegacyEntry old;
+        ok=fread(&old,sizeof(old),1,f)==1;
+        if(!ok) break;
+        memcpy(&e->item.song,&old.item.song,sizeof(old.item.song));
+        memcpy(e->item.source_name,old.item.source_name,sizeof(old.item.source_name));
+        e->item.source_id=old.item.source_id; e->item.source_order=old.item.source_order;
+        e->item.song_order=old.item.song_order; e->item.score=old.item.score;
+        memcpy(e->uri,old.uri,sizeof(old.uri)); e->bytes=old.bytes; e->id=old.id;
+    }
     for(uint32_t i=0;ok && i<s->count;++i) {
         CacheEntry *e=&s->entries[i]; SourceSong *song=&e->item.song;
         ok=e->id>0 && e->id<s->next_id && e->bytes>0 && e->bytes<=2*1024*CACHE_MIB &&
@@ -102,7 +136,7 @@ static bool load(char error[256]) {
             field(e->item.source_name,sizeof(e->item.source_name)) && field(song->id,sizeof(song->id)) &&
             field(song->name,sizeof(song->name)) && field(song->artist,sizeof(song->artist)) &&
             field(song->album,sizeof(song->album)) && field(song->quality,sizeof(song->quality)) &&
-            field(song->url,sizeof(song->url)) && isfinite(song->duration) && song->duration>=0;
+            field(song->url,sizeof(song->url)) && field(song->cover,sizeof(song->cover)) && isfinite(song->duration) && song->duration>=0;
         for(uint32_t j=0;ok && j<i;++j) if(e->id==s->entries[j].id || same(&e->item,&s->entries[j].item)) ok=false;
     }
     if(ok) ok=fgetc(f)==EOF && !ferror(f);
@@ -163,6 +197,14 @@ static void change(int action,const SearchItem *item,uint32_t id,uint64_t limit,
     if(action!=CACHE_DOWNLOAD || !item) return;
     for(uint32_t i=0;i<s->count;++i) if(same(item,&s->entries[i].item)) {
         if(io(2,NULL,s->entries[i].uri,0,NULL,NULL,error)) {
+            // 旧缓存可补齐新搜索提供的封面地址，但绝不重新下载音频。
+            if(item->song.cover[0] && strcmp(item->song.cover,s->entries[i].item.song.cover)) {
+                char previous[2048]; memcpy(previous,s->entries[i].item.song.cover,sizeof(previous));
+                memcpy(s->entries[i].item.song.cover,item->song.cover,sizeof(previous));
+                if(!save(error)) {
+                    memcpy(s->entries[i].item.song.cover,previous,sizeof(previous)); return;
+                }
+            }
             snprintf(error,256,"该歌曲已缓存，不会重复下载"); return;
         }
         if(strcmp(error,"缓存文件不存在")) return;

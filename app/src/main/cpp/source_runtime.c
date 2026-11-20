@@ -138,6 +138,10 @@ static bool songs(Runtime *r,JSValueConst value,RuntimeResult *result,char error
             field(r,song,"album",s->album,sizeof(s->album),false,error) &&
             field(r,song,"quality",s->quality,sizeof(s->quality),true,error) &&
             field(r,song,"url",s->url,sizeof(s->url),true,error);
+        // 封面可选；坏地址只回退占位，不能使可播放的歌曲整个搜索失败。
+        char ignored[256];
+        if(!field(r,song,"cover",s->cover,sizeof(s->cover),false,ignored) ||
+           (s->cover[0] && strncmp(s->cover,"https://",8) && strncmp(s->cover,"http://",7))) s->cover[0]=0;
         if(ok && strncmp(s->url,"https://",8) && strncmp(s->url,"http://",7)) {
             snprintf(error,256,"歌曲下载地址必须为 HTTP(S)"); ok=false;
         }

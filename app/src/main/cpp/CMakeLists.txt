@@ -29,7 +29,8 @@ string(REPLACE "\n" "\\n\"\n\"" LX_COMPAT_C "${LX_COMPAT_C}")
 configure_file(lx_compat.h.in lx_compat.h @ONLY)
 
 add_library(lxmusicc SHARED main.c render.c ui.c platform.c source.c source_parse.c
-        source_bridge.c source_runtime.c search.c playback.c playback_bridge.c cache.c cache_bridge.c)
+        source_bridge.c source_runtime.c search.c playback.c playback_bridge.c cache.c cache_bridge.c
+        player_ui.c cover.c cover_bridge.c)
 
 target_include_directories(lxmusicc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(lxmusicc PRIVATE -Wall -Wextra -Wno-unused-parameter)

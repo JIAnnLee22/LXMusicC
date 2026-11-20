@@ -13,6 +13,16 @@ class SourceActivity : NativeActivity() {
     @Volatile private var closing = false
     private external fun nativePaste(data: ByteArray?, error: String?, search: Boolean)
     private external fun nativeSearchCancelled(token: Long): Boolean
+    private external fun nativeCoverCancelled(token: Long): Boolean
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        volumeControlStream = android.media.AudioManager.STREAM_MUSIC
+    }
+
+    /** 二进制传输仅在 C 封面线程执行；解码和缓存策略留在 C。 */
+    fun requestCover(data: ByteArray, token: Long): ByteArray =
+        CoverHttp.execute(data) { closing || nativeCoverCancelled(token) }
 
     override fun onDestroy() {
         closing = true

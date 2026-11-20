@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "player_ui.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,7 +49,7 @@ void ui_init(Ui *u,const UiState *saved) {
         for(int i=0;i<4;++i) if(!isfinite(u->state.scroll[i]) || u->state.scroll[i]<0) u->state.scroll[i]=0;
     }
 }
-void ui_cancel(Ui *u) { u->pressed=u->dragging=false; u->velocity=0; u->pointer=-1; }
+void ui_cancel(Ui *u) { u->pressed=u->dragging=u->seeking=false; u->velocity=0; u->pointer=-1; }
 void ui_layout(Ui *u,Rect area) {
     u->area=area;
     float header=area.h<380?66:92;
@@ -181,49 +182,6 @@ static float search(Ui *u,Renderer *r,float x,float y,float w) {
         fitted(r,x+14,y+96,w-28,11,MUTED,item->source_name); y+=120;
     }
     return y-start+10;
-}
-
-static float player(Ui *u,Renderer *r,float x,float y,float w) {
-    float start=y; bool wide=w>600;
-    float cover=wide?fminf(220,w*.34f):fminf(224,w-32);
-    float cx=wide?x:x+(w-cover)/2;
-    render_rect(r,(Rect){cx,y,cover,cover},28,TINT);
-    render_rect(r,(Rect){cx+cover*.22f,y+cover*.22f,cover*.56f,cover*.56f},cover*.28f,LINE);
-    center(r,(Rect){cx,y,cover,cover},58,ACCENT,"♪");
-    float dx=wide?x+cover+36:x, dy=wide?y+8:y+cover+20, dw=wide?w-cover-36:w;
-    PlaybackView *p=&u->playback;
-    if(p->count) {
-        fitted(r,dx+12,dy+28,dw-24,22,TEXT,p->current.song.name);
-        fitted(r,dx+12,dy+63,dw-24,14,MUTED,p->current.song.artist);
-        fitted(r,dx+12,dy+84,dw-24,11,ACCENT,p->current.song.quality);
-    } else {
-        center(r,(Rect){dx,dy,dw,36},22,TEXT,"还没有正在播放的歌曲");
-        center(r,(Rect){dx,dy+42,dw,24},13,MUTED,"选择音乐后，播放信息会显示在这里");
-    }
-    render_rect(r,(Rect){dx+12,dy+92,dw-24,3},2,LINE);
-    char position[24],duration[24]="--:--";
-    snprintf(position,sizeof(position),"%lld:%02lld",(long long)p->position/60000,(long long)p->position/1000%60);
-    text(r,dx+12,dy+119,11,MUTED,p->count?position:"--:--");
-    if(p->duration>0) snprintf(duration,sizeof(duration),"%lld:%02lld",(long long)p->duration/60000,(long long)p->duration/1000%60);
-    text(r,dx+dw-60,dy+119,11,MUTED,duration);
-    if(p->count) {
-        float bw=(dw-16)/3;
-        button(u,r,(Rect){dx,dy+140,bw,42},"上一首",ACT_PLAYBACK,PLAYBACK_PREVIOUS,false);
-        button(u,r,(Rect){dx+bw+8,dy+140,bw,42},p->requested&&!p->error[0]?"暂停":"播放",ACT_PLAYBACK,
-            p->requested&&!p->error[0]?PLAYBACK_PAUSE:PLAYBACK_PLAY,true);
-        button(u,r,(Rect){dx+2*bw+16,dy+140,bw,42},"下一首",ACT_PLAYBACK,PLAYBACK_NEXT,false);
-        button(u,r,(Rect){dx,dy+190,(dw-8)/2,32},"后退 10 秒",ACT_PLAYBACK_SEEK,-10,false);
-        button(u,r,(Rect){dx+(dw+8)/2,dy+190,(dw-8)/2,32},"前进 10 秒",ACT_PLAYBACK_SEEK,10,false);
-        const char *status=p->error[0]?p->error:p->playing?"正在播放":p->state==2?"正在加载…":
-            p->state==4?"播放结束":p->requested?"等待音频焦点":"已暂停";
-        fitted(r,dx+12,dy+246,dw-24,12,ACCENT,status);
-        char info[320]; snprintf(info,sizeof(info),"%d / %d  %s",p->index+1,p->count,p->current.source_name);
-        fitted(r,dx+12,dy+266,dw-24,11,MUTED,info);
-        button(u,r,(Rect){dx,dy+282,(dw-8)/2,36},u->cache.busy?"缓存处理中…":"缓存当前歌曲",ACT_CACHE_DOWNLOAD,0,false);
-        button(u,r,(Rect){dx+(dw+8)/2,dy+282,(dw-8)/2,36},p->local_uri[0]?"离线播放 / 管理":"缓存管理",ACT_CACHE_OPEN,0,false);
-        fitted(r,dx+4,dy+340,dw-8,12,ACCENT,u->cache.message);
-    } else button(u,r,(Rect){dx+(dw-148)/2,dy+144,148,44},"前往搜索",ACT_TAB,1,true);
-    return fmaxf(y+cover,dy+(p->count?354:286))-start+20;
 }
 
 // UTF-8 按可用宽度换行，外部元数据不参与格式化或执行。
@@ -364,7 +322,7 @@ void ui_draw(Ui *u,Renderer *r,double now) {
     switch(u->state.tab) {
         case 0: extent=library(u,r,b.x,y,b.w); break;
         case 1: extent=search(u,r,b.x,y,b.w); break;
-        case 2: extent=player(u,r,b.x,y,b.w); break;
+        case 2: extent=ui_player_draw(u,r,b.x,y,b.w); break;
         case 3: extent=settings(u,r,b.x,y,b.w); break;
     }
     u->max_scroll[u->state.tab]=fmaxf(0,extent-b.h);
@@ -399,6 +357,7 @@ bool ui_tick(Ui *u,float dt) {
     float *s=&u->state.scroll[u->state.tab];
     float clamped=clamp(*s,0,u->max_scroll[u->state.tab]);
     bool dirty=clamped!=*s; *s=clamped;
+    dirty=ui_player_tick(u,dt)||dirty;
     if(dt<=0) return dirty;
     if(!u->pressed && fabsf(u->velocity)>3) {
         float prev=*s; *s=clamp(*s+u->velocity*dt,0,u->max_scroll[u->state.tab]);
@@ -410,6 +369,7 @@ bool ui_tick(Ui *u,float dt) {
 }
 
 void ui_touch(Ui *u,int action,float x,float y,double now) {
+    if(ui_player_touch(u,action,x,y,now)) return;
     if(action==0) {
         u->pressed=true; u->dragging=false; u->velocity=0;
         u->down_x=x; u->down_y=u->last_y=y; u->last_time=now; return;
@@ -427,7 +387,16 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
     }
     if(action!=1) { ui_cancel(u); return; }
     u->pressed=false;
-    if(u->dragging) { if(now-u->last_time>.12) u->velocity=0; return; }
+    if(u->dragging) {
+        float dy=y-u->down_y, dx=x-u->down_x;
+        if(u->state.tab==2 && fabsf(dy)>56 && fabsf(dx)<fabsf(dy)*.7f &&
+           inside(u->body,u->down_x,u->down_y) &&
+           ((!u->queue_open && dy<0 && inside(u->art_rect,u->down_x,u->down_y)) ||
+            (u->queue_open && dy>0 && u->down_y<u->body.y+80)))
+            ui_player_action(u,PLAYER_TOGGLE_QUEUE,0);
+        if(now-u->last_time>.12) u->velocity=0;
+        return;
+    }
     for(int i=u->hit_count-1;i>=0;--i) {
         UiHit h=u->hits[i];
         if(!inside(h.rect,x,y) || !inside(h.rect,u->down_x,u->down_y)) continue;
@@ -436,6 +405,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
         if(h.action!=ACT_SOURCE_DELETE) u->delete_id=0;
         if(h.action!=ACT_CACHE_DELETE) u->cache_delete_id=0;
         if(h.action!=ACT_CACHE_CLEAR) u->cache_clear_confirm=false;
+        if(h.action>=PLAYER_TOGGLE_QUEUE) { ui_player_action(u,h.action,h.value); break; }
         switch(h.action) {
             case ACT_TAB: u->state.tab=h.value; u->velocity=0; break;
             case ACT_FILTER: u->state.library_filter=h.value; break;
@@ -519,6 +489,9 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
 bool ui_back(Ui *u) {
     ui_cancel(u);
     if(u->toast_until>0) { u->toast_until=0; return true; }
+    if(u->state.tab==2 && u->queue_open) {
+        ui_player_action(u,PLAYER_TOGGLE_QUEUE,0); return true;
+    }
     if(u->state.tab==1 && u->input_open) { u->input_open=false; return true; }
     if(u->state.tab==1 && u->search.busy) { search_cancel(); return true; }
     if(u->state.tab==3 && u->cache_open) {

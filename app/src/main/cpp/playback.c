@@ -2,9 +2,11 @@
 #include "playback_bridge.h"
 #include "cache.h"
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static struct {
     pthread_mutex_t lock;
@@ -14,6 +16,58 @@ static struct {
     bool starting;
 } playback={.lock=PTHREAD_MUTEX_INITIALIZER};
 
+/* 随机模式历史栈：容量等于队列长度（≤SEARCH_RESULT_LIMIT），静态有界、不分配。
+ * history[0..history_at] 是当前曲目之前走过的随机路径，history_at 之后是被改写前丢弃的旧路径。 */
+static int shuffle_history[SEARCH_RESULT_LIMIT];
+static int history_len, history_at;
+static uint64_t shuffle_seed;
+
+static void history_reset(int index) {
+    shuffle_history[0]=index; history_len=1; history_at=0;
+}
+static void history_push(int index) {
+    int cap=playback.view.count;
+    if(cap<1) return;
+    if(cap>SEARCH_RESULT_LIMIT) cap=SEARCH_RESULT_LIMIT;
+    if(history_len>0 && shuffle_history[history_at]==index) return;
+    history_len=history_at+1;                 // 随机改向后，旧“未来”不再有效
+    if(history_len>=cap) {                    // 历史有界：挤掉最旧一条
+        memmove(shuffle_history,shuffle_history+1,(size_t)(history_len-1)*sizeof(int));
+        --history_len;
+    }
+    shuffle_history[history_len++]=index;
+    history_at=history_len-1;
+}
+static int history_previous(void) {
+    if(history_at<=0) return -1;
+    return shuffle_history[--history_at];
+}
+/* 除当前曲外均匀取一首，count<2 时只能返回当前曲。 */
+static int shuffle_pick(int current,int count) {
+    if(count<2) return current;
+    if(!shuffle_seed) {
+        shuffle_seed=(uint64_t)time(NULL)*0x9e3779b97f4a7c15ull^(uintptr_t)&shuffle_seed;
+    }
+    shuffle_seed^=shuffle_seed<<13; shuffle_seed^=shuffle_seed>>7; shuffle_seed^=shuffle_seed<<17;
+    int pick=(int)(shuffle_seed%(uint64_t)(count-1));
+    return pick>=current?pick+1:pick;
+}
+/* 手动“下一首”的目标；返回 -1 表示顺序模式已到末尾（自然结束由调用者判断模式）。 */
+static int next_index(void) {
+    PlaybackView *v=&playback.view;
+    if(v->mode==PLAYBACK_MODE_SHUFFLE) return shuffle_pick(v->index,v->count);
+    if(v->mode==PLAYBACK_MODE_LIST || v->mode==PLAYBACK_MODE_SINGLE)
+        return v->index+1<v->count?v->index+1:0;      // 列表/单曲循环：手动切歌仍环绕
+    return v->index+1<v->count?v->index+1:-1;         // 顺序模式保持原有边界
+}
+static int previous_index(void) {
+    PlaybackView *v=&playback.view;
+    if(v->mode==PLAYBACK_MODE_SHUFFLE) {
+        int index=history_previous();
+        return index>=0?index:shuffle_pick(v->index,v->count);
+    }
+    return v->index>0?v->index-1:v->count-1;          // 列表/单曲循环：首曲回绕到末曲
+}
 static void publish(void) {
     ++playback.view.revision;
     if(playback.looper) ALooper_wake(playback.looper);
@@ -25,6 +79,7 @@ static void apply(int action) {
     }
     publish();
 }
+/* 换曲：清空旧曲状态并递增代次，服务与解码器的迟到回调按代次丢弃。 */
 static void load(int index) {
     PlaybackView *v=&playback.view;
     v->index=index; v->current=playback.queue[index];
@@ -32,6 +87,7 @@ static void load(int index) {
     cache_lookup(&v->current,v->local_uri);
     v->position=v->duration=0; v->state=2; v->playing=false;
     v->requested=true; v->error[0]=0; ++v->generation;
+    history_push(index);
     apply(PLAYBACK_LOAD);
 }
 void playback_ui(ALooper *looper) {
@@ -55,6 +111,7 @@ bool playback_replace(const SearchItem *items,int count,int index) {
     memcpy(queue,items,(size_t)count*sizeof(*queue));
     pthread_mutex_lock(&playback.lock);
     free(playback.queue); playback.queue=queue; playback.view.count=count;
+    history_reset(index);                 // 新队列从当前曲开始重置随机历史
     load(index);
     pthread_mutex_unlock(&playback.lock);
     return true;
@@ -62,20 +119,43 @@ bool playback_replace(const SearchItem *items,int count,int index) {
 void playback_command(int action,int64_t position) {
     pthread_mutex_lock(&playback.lock);
     PlaybackView *v=&playback.view;
+    if(action==PLAYBACK_MODE) {
+        // 模式属于播放器偏好，空队列也允许设置；越界忽略。
+        if(position>=0 && position<=PLAYBACK_MODE_SHUFFLE) {
+            v->mode=(int)position;
+            history_reset(v->index);
+            publish();
+        }
+        pthread_mutex_unlock(&playback.lock);
+        return;
+    }
     if(!v->count) goto done;
     switch(action) {
         case PLAYBACK_END:
             // position 此处为结束曲目的代次，迟到的结束事件不能跳过新队列。
             if((uint64_t)position!=v->generation) break;
-            if(v->index+1<v->count) load(v->index+1);
-            else { v->requested=false; apply(PLAYBACK_PAUSE); }
+            // 已停止/暂停时不再按模式自动续播，避免停止后排队的结束事件重新起播。
+            if(!v->requested) break;
+            // 单曲循环只在自然结束时重播本曲；列表/随机按各自策略前进。
+            {
+                int target=v->mode==PLAYBACK_MODE_SINGLE?v->index:next_index();
+                if(target>=0) load(target);
+                else { v->requested=false; apply(PLAYBACK_PAUSE); }
+            }
             break;
-        case PLAYBACK_NEXT:
-            if(v->index+1<v->count) load(v->index+1);
+        case PLAYBACK_NEXT: {
+            int target=next_index();
+            if(target>=0) load(target);
             break;
+        }
         case PLAYBACK_PREVIOUS:
-            if(v->index>0) load(v->index-1);
-            else { v->position=0; apply(PLAYBACK_SEEK); }
+            if(v->mode==PLAYBACK_MODE_SEQUENCE) {
+                if(v->index>0) load(v->index-1);
+                else { v->position=0; apply(PLAYBACK_SEEK); }
+            } else load(previous_index());
+            break;
+        case PLAYBACK_SELECT:
+            if(position>=0 && position<v->count) load((int)position);
             break;
         case PLAYBACK_PLAY: {
             char uri[CACHE_URI_BYTES]="";
@@ -104,12 +184,36 @@ void playback_command(int action,int64_t position) {
 done:
     pthread_mutex_unlock(&playback.lock);
 }
+/* 与各模式的实际切歌语义一致：顺序模式按原边界，列表/单曲循环与随机（count>1）总能切。 */
 bool playback_can_skip(int delta) {
     pthread_mutex_lock(&playback.lock);
-    int target=playback.view.index+delta;
-    bool result=target>=0 && target<playback.view.count;
+    int index=playback.view.index, count=playback.view.count, mode=playback.view.mode;
+    bool result;
+    if(mode!=PLAYBACK_MODE_SEQUENCE) result=count>1;
+    else if(delta>0) result=index+1<count;
+    else if(delta<0) result=index>0;
+    else result=count>0;
     pthread_mutex_unlock(&playback.lock);
     return result;
+}
+/* 播放页每帧安全拉取当前页：持锁拷贝，页码夹取到有效范围。 */
+void playback_queue(PlaybackQueue *queue,int page) {
+    if(!queue) return;
+    pthread_mutex_lock(&playback.lock);
+    PlaybackView *v=&playback.view;
+    int total=v->count, start=0, count=0;
+    if(total>0) {
+        int max_page=(total-1)/PLAYBACK_QUEUE_PAGE;
+        if(page<0) page=0;
+        if(page>max_page) page=max_page;
+        start=page*PLAYBACK_QUEUE_PAGE;
+        count=total-start;
+        if(count>PLAYBACK_QUEUE_PAGE) count=PLAYBACK_QUEUE_PAGE;
+    } else page=0;
+    queue->count=count; queue->total=total; queue->page=page;
+    queue->index=v->index; queue->revision=v->revision;
+    for(int i=0;i<count;++i) queue->items[i]=playback.queue[start+i];
+    pthread_mutex_unlock(&playback.lock);
 }
 void playback_ready(void) {
     pthread_mutex_lock(&playback.lock);

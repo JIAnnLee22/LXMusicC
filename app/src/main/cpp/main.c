@@ -4,6 +4,8 @@
 #include "platform.h"
 #include "source_bridge.h"
 #include "cache_bridge.h"
+#include "cover.h"
+#include "player_ui.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/keycodes.h>
@@ -15,6 +17,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -32,6 +35,8 @@ typedef struct {
     pthread_t loader;
     atomic_int font_status;
     unsigned char *atlas;
+    CoverImage cover;
+    char cover_url[2048];
     double retry_at;
     float scale;
     int insets[4];
@@ -100,6 +105,7 @@ static bool engine_create(Engine *e) {
     if(!eglSwapInterval(e->display,1)) goto fail;
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
     if(!render_create(&e->renderer,e->atlas)) goto fail;
+    render_cover_upload(&e->renderer,e->cover.pixels,e->cover.width,e->cover.height);
     e->ready=true; e->dirty=true; e->insets_dirty=true;
     LOGI("UI GLES ready: %s",(const char *)glGetString(GL_VERSION));
     return true;
@@ -171,6 +177,8 @@ static int32_t on_input(struct android_app *app,AInputEvent *event) {
     Engine *e=app->userData; Ui *u=&e->ui;
     if(AInputEvent_getType(event)==AINPUT_EVENT_TYPE_KEY) {
         int key=AKeyEvent_getKeyCode(event);
+        // 即使搜索软键盘展开，也把硬件音量交还系统媒体流处理。
+        if(key==AKEYCODE_VOLUME_UP || key==AKEYCODE_VOLUME_DOWN || key==AKEYCODE_VOLUME_MUTE) return 0;
         if(key!=AKEYCODE_BACK) {
             if(u->state.tab!=1 || !u->input_open) return 0;
             if(AKeyEvent_getAction(event)!=AKEY_EVENT_ACTION_DOWN) return 1;
@@ -222,7 +230,8 @@ void android_main(struct android_app *app) {
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
     playback_ui(app->looper);
-    playback_view(&e.ui.playback);
+    playback_view(&e.ui.playback); ui_player_sync(&e.ui);
+    bool cover_started=cover_start(app->activity->internalDataPath,source_wake,app->activity);
     bool sources_started=source_start(app->activity->internalDataPath,source_bridge_fetch,source_bridge_http,source_wake,app->activity);
     bool search_started=search_start(source_bridge_search_http,source_wake,app->activity);
     bool cache_started=cache_start(app->activity->internalDataPath,cache_bridge_io,source_wake,app->activity);
@@ -233,14 +242,30 @@ void android_main(struct android_app *app) {
         bool visible=app->window && e.resumed && e.focused;
         double now=seconds();
         if(visible && status==1 && !e.ready && now>=e.retry_at) engine_create(&e);
-        bool animate=visible && ((!e.ui.pressed && fabsf(e.ui.velocity)>3) || e.ui.toast_until>0);
+        bool animate=visible && ((!e.ui.pressed && fabsf(e.ui.velocity)>3) || e.ui.toast_until>0 || ui_player_animating(&e.ui));
         int timeout=visible && e.ready && (e.dirty||animate)?0:visible && !e.ready?100:-1;
         int events; struct android_poll_source *source=NULL;
         int result=ALooper_pollOnce(timeout,NULL,&events,(void **)&source);
         if(result==ALOOPER_POLL_ERROR) { LOGE("looper failed"); break; }
         if(result>=0 && source) source->process(app,source);
         if(app->destroyRequested) break;
-        if(playback_view(&e.ui.playback)) e.dirty=true;
+        if(playback_view(&e.ui.playback)) { ui_player_sync(&e.ui); e.dirty=true; }
+        const char *cover_url=e.ui.playback.count?e.ui.playback.current.song.cover:"";
+        if(strcmp(cover_url,e.cover_url) || e.ui.cover_retry_requested) {
+            snprintf(e.cover_url,sizeof(e.cover_url),"%s",cover_url);
+            e.ui.cover_retry_requested=false;
+            free(e.cover.pixels); e.cover=(CoverImage){0};
+            if(e.ready) render_cover_upload(&e.renderer,NULL,0,0);
+            e.ui.cover_loading=cover_started && cover_url[0];
+            if(cover_started) cover_request(cover_url);
+            e.ui.cover_fade=0; e.dirty=true;
+        }
+        CoverImage next={0};
+        if(cover_started && cover_take(&next)) {
+            free(e.cover.pixels); e.cover=next; e.ui.cover_loading=false;
+            if(e.ready) render_cover_upload(&e.renderer,next.pixels,next.width,next.height);
+            e.ui.cover_fade=0; e.dirty=true;
+        }
         if(e.ui.playback_requested) { e.ui.playback_requested=false; playback_ensure(app->activity); }
         if(cache_view(&e.ui.cache)) e.dirty=true;
         if(source_view(&e.ui.sources)) e.dirty=true;
@@ -257,6 +282,8 @@ void android_main(struct android_app *app) {
     }
     playback_ui(NULL); // 只解除 UI 订阅，进程级队列与前台服务继续播放。
     source_bridge_cancel(app->activity);
+    if(cover_started) cover_stop();
+    free(e.cover.pixels);
     if(cache_started) cache_stop();
     if(search_started) search_stop();
     if(sources_started) source_stop();

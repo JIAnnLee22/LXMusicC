@@ -22,12 +22,13 @@ static const char *FS =
     "#version 300 es\nprecision highp float;"
     "in vec2 vUV; in vec2 vLocal; in vec2 vHalf; in vec4 vColor;"
     "in float vRadius; in float vMode; uniform sampler2D atlas; out vec4 frag;"
-    "void main(){float a; if(vMode>0.5){float d=texture(atlas,vUV).r;"
+    "void main(){float a; if(vMode>0.5 && vMode<1.5){float d=texture(atlas,vUV).r;"
     "float aa=max(fwidth(d)*0.75,0.005); a=smoothstep(0.502-aa,0.502+aa,d);"
     "}else{vec2 q=abs(vLocal)-vHalf+vRadius;"
     "float d=length(max(q,vec2(0)))+min(max(q.x,q.y),0.)-vRadius;"
     "float aa=max(fwidth(d),0.25); a=1.-smoothstep(-aa,aa,d);}"
-    "a*=vColor.a;frag=vec4(vColor.rgb*a,a);}";
+    "vec4 c=vColor; if(vMode>1.5){vec4 t=texture(atlas,vUV);c*=t;}"
+    "a*=c.a;frag=vec4(c.rgb*a,a);}";
 
 static GLuint shader(GLenum type, const char *src) {
     GLuint s = glCreateShader(type);
@@ -71,9 +72,9 @@ bool render_create(Renderer *r, const unsigned char *atlas) {
 }
 
 void render_destroy(Renderer *r) {
-    glDeleteTextures(1, &r->atlas); glDeleteBuffers(1, &r->vbo);
+    glDeleteTextures(1, &r->atlas); glDeleteTextures(1, &r->cover); glDeleteBuffers(1, &r->vbo);
     glDeleteVertexArrays(1, &r->vao); glDeleteProgram(r->program);
-    r->atlas = r->vbo = r->vao = r->program = 0; r->count = 0;
+    r->cover = r->atlas = r->vbo = r->vao = r->program = 0; r->count = 0;
 }
 
 void render_begin(Renderer *r, int width, int height, float scale) {
@@ -117,6 +118,34 @@ static void quad(Renderer *r, Rect b, Rect uv, float radius, Color c, float mode
 }
 void render_rect(Renderer *r, Rect b, float radius, Color c) {
     quad(r,b,(Rect){0},fminf(radius,fminf(b.w,b.h)/2),c,0);
+}
+
+bool render_cover_upload(Renderer *r,const unsigned char *pixels,int width,int height) {
+    render_flush(r);
+    glDeleteTextures(1,&r->cover); r->cover=0;
+    r->cover_width=r->cover_height=0;
+    if(!pixels) return true;
+    if(width<1 || height<1 || width>512 || height>512) return false;
+    glGenTextures(1,&r->cover); glBindTexture(GL_TEXTURE_2D,r->cover);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,width,height,0,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    bool ok=glGetError()==GL_NO_ERROR;
+    if(!ok) { glDeleteTextures(1,&r->cover); r->cover=0; }
+    else { r->cover_width=width; r->cover_height=height; }
+    glBindTexture(GL_TEXTURE_2D,r->atlas); return ok;
+}
+void render_cover(Renderer *r,Rect b,float radius,float opacity) {
+    if(!r->cover) return;
+    float aspect=(float)r->cover_width/r->cover_height;
+    Rect uv={0,0,1,1};
+    if(aspect>1) { uv.w=1/aspect; uv.x=(1-uv.w)/2; }
+    else { uv.h=aspect; uv.y=(1-uv.h)/2; }
+    render_flush(r); glBindTexture(GL_TEXTURE_2D,r->cover);
+    quad(r,b,uv,radius,(Color){1,1,1,opacity},2);
+    render_flush(r); glBindTexture(GL_TEXTURE_2D,r->atlas);
 }
 
 static uint32_t next_cp(const char **p) {

@@ -13,7 +13,8 @@ typedef struct {
 #define FONT_ATLAS_SIZE 4096
 #define FONT_ATLAS_BYTES (FONT_ATLAS_SIZE * FONT_ATLAS_SIZE)
 typedef struct {
-    GLuint program, vao, vbo, atlas;
+    GLuint program, vao, vbo, atlas, cover;
+    int cover_width, cover_height;
     GLint resolution;
     float width, height, scale;
     int pixel_w, pixel_h, count;
@@ -28,6 +29,9 @@ void render_flush(Renderer *r);
 void render_clip(Renderer *r, Rect rect);
 void render_unclip(Renderer *r);
 void render_rect(Renderer *r, Rect rect, float radius, Color color);
+/* RGBA CPU 图由后台解码，GL 上传与销毁只在拥有上下文的线程执行。 */
+bool render_cover_upload(Renderer *r,const unsigned char *pixels,int width,int height);
+void render_cover(Renderer *r,Rect rect,float radius,float opacity);
 void render_text(Renderer *r, float x, float baseline, float size, Color color, const char *text);
 float render_text_width(const char *text, float size);
 #endif
