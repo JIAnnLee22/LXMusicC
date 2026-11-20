@@ -936,8 +936,8 @@ push_branch() {
 }
 
 first_open_item() { awk '/^- \[ \]/ { print; exit }' "$PROJECT_DIR/PLAN.md" 2>/dev/null; }
-item_id()   { sed -n 's/^- \[ \] `\([^`]*\)`.*/\1/p' <<<"$1"; }
-item_title(){ sed -n 's/^- \[ \] `[^`]*`[[:space:]]*//p' <<<"$1"; }
+item_id()   { sed -n 's/^- \[ \] `\([^`]*\)`.*/\1/p'; }        # stdin = PLAN 行
+item_title(){ sed -n 's/^- \[ \] `[^`]*`[[:space:]]*//p'; }      # stdin = PLAN 行
 item_ticked() { grep -qE "^- \[[xX]\] \`$1\`" "$PROJECT_DIR/PLAN.md"; }
 plan_done() { [ -z "$(first_open_item)" ]; }
 last_commit() { git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo none; }
