@@ -76,7 +76,7 @@ HTTP 支持 GET/POST/PUT/DELETE/PATCH/HEAD、请求头和 UTF-8 正文；仅无�
 | PlaybackService → C | `nativeReady` | `()Z` | Android 主线程 onCreate | 登记服务 GlobalRef 和 applyPlayback 方法，true=登记成功，C 尝试排入当前曲目；false=登记失败，服务停止，允许前台重试 |
 | PlaybackService → C | `nativeGone` | `()V` | Android 主线程 onDestroy | 删除服务 GlobalRef，断开输出，保留 C 队列/位置，不借用已销毁 Activity |
 | PlaybackStart → C | `nativeFailure` | `()V` | Android 主线程 | 清启动中标记，发布可重试启动错误 |
-| C → PlaybackService | `applyPlayback` | `(I[B[B[BJJZ)Z` | GL 或服务回调线程调用，仅 Handler.post；执行在 Android 主线程 | 参数 action、URL/title/artist 标准 UTF-8 字节数组、positionMs、generation、autoplay；true=已入队，false/异常失败。只有 LOAD 使用三个数组，其余为 null |
+| C → PlaybackService | `applyPlayback` | `(I[B[B[BJJZ)Z` | GL 或服务回调线程调用，仅 Handler.post；执行在 Android 主线程 | 参数 action、URL/title/artist 标准 UTF-8 字节数组、positionMs、generation、autoplay；true=已入队，false/异常失败。12阶段后仅处理2/3/4/8，三个数组为null，LOAD改走applyQueue；执行时generation不匹配则忽略，true不保证已执行 |
 | PlaybackService → C | `nativeCommand` | `(IJ)V` | Android 主线程，媒体会话/耳机按键/解码结束 | action=2 播放、3 暂停、4 seek、5 下一首、6 上一首、7 自然结束、8 停止；Long 为 seek 毫秒，action=7 时为结束曲目的 generation，其余忽略 |
 | PlaybackService → C | `nativeCanSkip` | `(I)Z` | Android 主线程，Media3 查询 | delta=±1，true=目标存在；无 IO、不暴露队列指针 |
 | PlaybackService → C | `nativeState` | `(JIZZJJ[B)V` | Android 主线程，Player.Listener 及播放中每秒 | generation、Media3 state(1..4)、isPlaying、playWhenReady、positionMs、durationMs、可空错误 UTF-8 字节数组；未知时长为 0。C 校验长度≤255/UTF-8/非负值/状态，丢弃旧代次 |
@@ -147,9 +147,9 @@ HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 
 - `event`：0 全量编辑快照（包含组合区）；1 搜索/提交；2 键盘关闭；3 可恢复的插入错误文本；4 框架调用失败（关闭当前会话，重新点击重试）。TextWatcher + InputConnectionWrapper 捕获 setComposingText/Region、commitText、finishComposingText、deleteSurroundingText/CodePoints，onSelectionChanged 捕获选区；因此中文预编辑、提交、退格、硬件快捷键走同一系统路径。组合期间 Enter 只结束组合，确认候选后 Enter 才执行 C 提交。
 - UTF-16↔UTF-8 偏移转换仅在 Kotlin 系统适配层；C 使用标准 UTF-8 字节数组，校验 UTF-8/NUL、长度、偏移范围及码点边界。关键词/名称≤255字节，地址≤2047字节，InputFilter 拒绝超限或换行并回报，不截断候选/代理对。整个脚本/JSON 沿用「粘贴导入」2MiB通道，不进入短文本框。
 - C `ime_bridge_request` 检查 GetEnv/Attach、PushLocalFrame、类/方法查找、NewByteArray、写数组、CallBooleanMethod 的异常/结果；清异常并记 LXMusicC，局部帧释放，按需 detach。回调检查数组长度/读取异常。邮箱保护 session、文本、sticky submit/hidden、错误与 insets；ALooper acquire/release 在同一锁内，停止后丢回调；先消费 submit 再 hidden，合并高频文本但不漏提交。
-- session 在 C 跨 Activity 单调分配；换页/关闭输入会失效，迟到候选不会写入其他输入框。UI/GL 线程唯一持有 Ui，Android 主线程不直接访问它。C 拖选只改变选区，不丢并发新正文；正文不变时不向系统回写，避免中断组合。主线程开键盘失败可通过再次点击同框重试；框架调用异常通过 event=4 提示并结束会话。
+- session 由 `ui_ime_sync` 的进程级静态 serial 单调分配，仅持有引擎所有权的 GL 线程写入；新 Activity 的 `ui_init` 清空输入目标/active，`ime_bridge_start` 复位邮箱 session 为0，再分配新 token。换页/关闭输入会失效，迟到候选不会写入其他输入框。UI/GL 线程唯一持有 Ui，Android 主线程不直接访问它。C 拖选只改变选区，不丢并发新正文；正文不变时不向系统回写，避免中断组合。主线程开键盘失败可通过再次点击同框重试；框架调用异常通过 event=4 提示并结束会话。
 - API30+ 取 `WindowInsets.Type.ime()`，adjustNothing 下由 C 收缩可用页面；26–29 使用 adjustResize、可见窗口 frame 与 system/stable insets 后备。与系统栏取最大而非相加；decor/surface 高度差扣除已 resize 的部分。旋转/分屏的短暂隐藏延迟300ms确认，API30+另用isVisible判断，避免把未覆盖顶部窗口的IME（bottom=0）误当关闭；每次创建 InputConnection 都写 NO_EXTRACT_UI/NO_FULLSCREEN，防止横屏进入全屏提取界面。
-- 返回先收键盘：EditText onKeyPreIme、系统 IME 隐藏通知与 C ui_back 都收敛为取消输入会话；随后才执行原页面返回。onPause 隐藏并同步最终正文，onDestroy 清 listener/View；C 退出先关闭桥/释放 looper。manifest 增加 screenLayout configChanges，避免分屏因该项重建 Activity 丢编辑文本。
+- 返回先收键盘：EditText onKeyPreIme、系统 IME 隐藏通知与 C ui_back 都收敛为取消输入会话；随后才执行原页面返回。onPause 隐藏并同步最终正文，onDestroy 清 listener/View；C 退出先尽力投递hide，再停桥/释放looper，随后cancelSourceFetch并join各Activity工作线程；异步hide可能因Activity已closing而被丢弃，不保证执行。manifest 增加 screenLayout configChanges，避免分屏因该项重建 Activity 丢编辑文本。
 
 原 `requestSearchPaste/nativePaste` ABI 保留兼容，但搜索/库页的粘贴按钮已转为上述 IME 选区粘贴；音源完整正文仍走原 `requestSourcePaste`。
 
@@ -159,7 +159,7 @@ HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 
 
 | 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
 | --- | --- | --- | --- | --- |
-| MediaCatalog → C | `nativeBoot` | `([B)Z` | 单一媒体 executor；不得在主/GL线程调用 | 标准 UTF-8 私有目录，1..1023字节；只读加载缓存索引、幂等启动进程级库/队列worker，等待首次队列读取。true=初始化成功；随后主线程才调用既有 nativeReady |
+| MediaCatalog → C | `nativeBoot` | `([B)Z` | 单一媒体 executor；不得在主/GL线程调用 | 标准 UTF-8 私有目录，1..1023字节；只读加载缓存索引、幂等启动进程级库/队列worker，阻塞等待首次队列读取。true=初始化成功；随后主线程才调用既有 nativeReady，false则stopSelf，不登记输出 |
 | MediaCatalog → C | `nativeQuery` | `(I[BIIJ)[B` | 同一媒体 executor | action、UTF-8 ID、page、pageSize、positionMs；0浏览子项、1读条目、2选曲并以暂停状态替换C队列、3获取恢复队列。page≥0、size=1..100、乘积不溢出、position=0..86400000；ID≤255字节。成功返回标准UTF-8 JSON；无效/过期ID、内存不足为null，由Media3返回失败，不接受客户端URI/元数据 |
 | C → PlaybackService | `applyQueue` | `([BJZ)Z` | 持播放锁的调用线程，仅 Handler.post；执行在Android主线程 | JSON队列镜像、generation、autoplay；true仅表示入队。替代原applyPlayback的LOAD路径；JSON含items[{id,title,artist,album,duration,url}]、index、position，最多240首，URL由C优先解析为缓存content URI |
 | PlaybackService → C | `nativeSeek` | `([BJ)V` | Android主线程，外部时间线选曲 | UTF-8 queue/serial/index ID≤95字节及positionMs；C同时验证队列serial、索引及位置，过期镜像不误选新队列；保留原播放/暂停意图 |
@@ -170,9 +170,9 @@ HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 
 ### 可浏览结构与控制协议
 - 根ID=`root`；子目录 `search`（本次进程已有搜索结果）、`favorites`、`playlists`、`recent`、`queue`；歌单目录为 `list/<稳定listId>`。无音源/无内容/冷启动无搜索结果返回空items，不触发联网搜索。
 - 歌曲ID：`lib/<listId>/<稳定trackId>`（0收藏、1历史、≥2歌单）、`search/<结果revision>/<索引>`、`queue/<队列serial>/<索引>`。所有ID由C生成/校验，结果更新后旧搜索ID失败；队列serial只在替换时变化，不随每秒进度变化。
-- MediaBrowser支持getLibraryRoot/getItem/getChildren/subscribe/unsubscribe；现代分页每页1..100项。旧版MediaBrowserCompat未分页订阅的MAX_VALUE请求在executor内分成100项读取，目录硬上限512首，最多六页，不把全库1024首一起扫描进UI。订阅目录约每秒比较C版本及首项快照，仅变化时通知；订阅总量上限128。
-- MediaController支持play/pause/stop/next/previous/seekTo/seekTo(index,position)，以及 `setMediaItem(MediaItem.Builder().setMediaId(id).build())` → prepare/play。一次选一个媒体库ID，由C生成其所在列表的最多240首窗口；客户端不能add/remove/move、传入自定义队列、设置随机/循环/倍速（模式仍在C页面管理）。平台控制器也可使用playFromMediaId/skipToQueueItem。
-- onSetMediaItems在executor完成C选曲、先投递applyQueue，再完成Future；Media3在同一主线程随后处理setMediaItems，wrapper此时不重复修改输出，prepare/play回C执行。系统时间线是完整C队列镜像，不再是单曲；ExoPlayer pauseAtEndOfMediaItems阻止自行跳歌，结束事件按generation去重后由C决定下一首/循环/随机。
+- MediaBrowser支持getLibraryRoot/getItem/getChildren/subscribe/unsubscribe；显式移除LIBRARY_SEARCH/GET_SEARCH_RESULT命令，外部不执行网络或库内关键词搜索；现代分页每页1..100项。旧版MediaBrowserCompat未分页订阅的MAX_VALUE请求在executor内分成100项读取，目录硬上限512首，最多六页，不把全库1024首一起扫描进UI。订阅目录约每秒比较C版本及首项快照，仅变化时通知；订阅总量上限128。
+- MediaController支持play/pause/stop/next/previous/seekTo/seekTo(index,position)，以及 `setMediaItem(MediaItem.Builder().setMediaId(id).build())` → prepare/play。一次选一个媒体库ID，由C生成其所在列表的最多240首窗口；客户端不能add/remove/move、传入自定义队列、设置随机/循环/倍速（模式仍在C页面管理）。平台控制器也可使用playFromMediaId/skipToQueueItem。时间线seek只使用当前镜像的`queue/<serial>/<index>`，不能直接将lib/search ID传给nativeSeek；seekToDefaultPosition回到当前曲0ms，seekBack/seekForward为前后10秒。
+- Controls命令经`MediaCatalog.dispatch`先在单executor排队，再post主线程执行nativeCommand/nativeSeek；尚未ready或已关闭则丢弃，不同步重入C。onSetMediaItems在executor完成C选曲、先投递applyQueue，再完成Future；Media3在同一主线程随后处理setMediaItems，wrapper此时不重复修改输出，prepare/play回C执行。系统时间线是完整C队列镜像，不再是单曲；ExoPlayer pauseAtEndOfMediaItems阻止自行跳歌，结束事件按generation去重后由C决定下一首/循环/随机。
 - Media3继续负责焦点、瞬态失焦恢复、音乐ducking、noisy暂停与系统路由；不重复申请焦点。ducking仅改变系统播放器音量乘子，不是用户暂停、不另设C业务状态。
 - SessionActivity的PendingIntent使用 `jiannlee22.lxmusicc.OPEN_PLAYER`、SINGLE_TOP/CLEAR_TOP；Activity为singleTask，冷/热唤醒均进入正在播放。不增加可见Kotlin UI；13阶段进一步串行交接新旧NativeActivity的引擎，处理系统先create再destroy的重叠生命周期。
 

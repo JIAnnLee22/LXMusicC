@@ -1,5 +1,15 @@
 # 架构说明
 
+## 1.1.0 当前模块与线程索引
+
+- **界面/输入**：`main.c`串行持有NativeActivity引擎与GLES；`ui*`/`ime_ui`负责页面、路由、文本显示与业务提交。`ImeBridge`在Android主线程以透明EditText承接InputConnection，UTF-8全文/选区/session经`ime_bridge`邮箱回GL；系统返回、字体/通知事实走`ux_bridge`。协议见[BRIDGE](BRIDGE.md#系统键盘输入11-system-ime)。
+- **音源/搜索**：C后台线程导入、解析、运行QuickJS与合并搜索；Kotlin只封装系统HTTP。搜索与封面用代次丢弃过期结果，磁盘/网络不在主/GL线程执行。
+- **播放/媒体**：`playback`是唯一业务队列和模式状态机；`PlaybackService`在Android主线程持Media3输出/会话，完整时间线仅为C镜像。`MediaCatalog`单executor启动无Activity的库/队列恢复、分页查询及媒体ID选曲；命令再post主线程进入C，不能同步回调持锁的applyQueue调用者。协议见[BRIDGE](BRIDGE.md#系统媒体库与恢复12-media-services)。
+- **持久化/离线**：C worker管理音源、库、设置、缓存索引与队列保存；CacheStorage仅做MediaStore与HTTP流式IO，C决定路径/配额/下载策略。服务启动只读索引查找缓存，不扫描或修改公共音乐目录；恢复队列始终暂停。
+- **生命周期/锁边界**：Activity退出停输入/显示订阅并取消、join其后台任务；不停止进程级媒体/库/队列worker。新旧引擎交接串行化但继续应答glue生命周期。播放锁、桥引用锁与库快照锁不跨磁盘IO或同步Java→C重入；输出/媒体查询不借用Ui或Activity内存。
+
+下文按条目保留历史实现和当轮验收；11–13节替代早期的自绘键盘、单曲媒体时间线与不保存队列限制，14节记录1.1.0发布验证，不将历史版本数字改写为当前数字。
+
 ## 01-ui-shell：原生界面骨架
 
 01 阶段入口为 Android 自带 `NativeActivity`，所有界面、命中测试和状态均为 C；该阶段没有 Java/Kotlin 源码或 Android UI SDK。02 阶段在此基础上添加无 UI 的最小 Kotlin 系统桥接，见下文。
@@ -402,3 +412,17 @@ C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8
 - 最终APK在Android17模拟器连续运行约649秒系统Monkey（seed=130013、250ms throttle、触摸/滚动/旋转/导航/切页），发出约8400个事件后主动停止；无新增应用崩溃/ANR，系统lastanr仍是修复前10:10:36记录。PSS采样约76–112MiB，末段约106–112MiB；停止后仍能交互、边缘返回与媒体播放。该压力检查不代替所有真实设备性能承诺。
 - 压力检查后媒体会话实际PLAYING、位置约2956ms、真实音频时长30024ms；HOME/OPEN_PLAYER唤醒回到播放页，播放不随页面切换停止。测试使用已有真实LX音源与公开预览，不用伪造歌曲响应；验收结束恢复模拟器原私有数据与系统字体/旋转设置。
 - 最终APK覆盖安装并启动Android15 arm64真机；该设备仍受adb触摸注入限制，不以模拟器结果冒充真机十分钟交互、物理蓝牙或所有ROM验证。API26–32返回后备与厂商字体/IME兼容仍需对应设备复核。本地截图、备份、命令日志与APK均不提交。
+
+## 14-release-1.1：1.1.0 发布准备
+
+- `app/build.gradle.kts`升级为versionName=1.1.0、versionCode=3，高于1.0.0的2；纯C设置/关于同步。README增加三步快速开始并保留系统键盘、媒体客户端与签名更新限制；CHANGELOG新增11–13阶段用户可感知变化。
+- JNI ABI和业务逻辑不变；BRIDGE补充IME会话初始化/退出、媒体启动失败、命令异步两跳、seek身份及关闭外部搜索命令的实际边界。当前模块/线程索引见文首；各协议的签名/线程/错误处理仍以BRIDGE为集中登记处。
+- 继续由外层`pi-loop.sh`按versionName生成v1.1.0标签；workflow不变，普通分支push不触发安装包发布。MILESTONE文档由外层在实际创建标签时生成，不提前伪造远端发布结果。
+- `./scripts/build.sh`及`./scripts/build.sh :app:assembleRelease`成功（约6s/12s），双ABI通过，Release lintVital通过；保留Nix SDK路径及旧API弃用等既有警告。未新增测试用例或Java/Kotlin文件。
+- Release通过`apksigner verify --verbose`（v2）；`aapt dump badging`确认1.1.0/3、minSdk26、targetSdk36、arm64-v8a/x86_64且不可调试；本地SHA-256=`80c2262a758706b950442ccf4d8ab1a42e580b9f9d8265683c517a30f9a51e64`。这是本地验收包，不代表CI可重现相同字节。
+- Android17 x86_64模拟器从原1.0.0/2执行`adb install -r`成功，不卸载/清数据；冷启动Status=ok（523ms）。在Release包中经系统地址框导入仓库现有`itunes-preview.js`（本地只读HTTP服务提供原文件，音频/搜索仍真实联网），显示导入成功；实际Gboard按键输入`oxyt`并回车，返回30首/4页，另一个无request handler音源独立显示错误、不阻碍结果。
+- 点击首曲Oxyt/ArcKaim，系统会话PLAYING、8首队列，实际预览长度29976ms；点击缓存完成，在公共`Music/LXMusicC/iTunes 公开预览示例/ArcKaim - Oxyt.m4a`生成约1.03MiB音频。关闭模拟器Wi-Fi和移动数据后，从缓存管理重新选该曲，仍实际播放；不是仅沿用在线播放缓冲。
+- 离线切HOME后会话PLAYING/2855ms，息屏后仍PLAYING/5864ms；息屏adb媒体pause→PAUSED/6993ms、play→PLAYING/7003ms。唤醒OPEN_PLAYER返回正在播放；实际点击系统通知媒体卡片按钮使会话PLAYING/28226ms→PAUSED/29438ms，通知权限拒绝仍可控制。
+- `./scripts/build.sh :app:lintDebug`成功（0错误/11个既有警告）；本轮LXMusicC/AndroidRuntime日志未发现崩溃。`bash -n`通过，单独调用现有`release_tag`函数得到v1.1.0，没有执行外层循环或创建标签；两份workflow保持不变。
+- 验收后通过缓存UI删除本轮新增音频/MediaStore条目；临时覆盖同签名Debug包仅为恢复原私有备份，全部8个文件逐字节核对一致，移除新增封面，再覆盖回Release并冷启动成功（648ms）。网络恢复原开启状态，移除端口转发和本地HTTP服务；APK、截图、备份、音源输入与命令日志不提交。
+- 原连接的arm64设备在本轮安装前已断开，未操作随后接入的其它设备，因此本轮仅模拟器完成Release链路；物理蓝牙/车机、真机输入法和旧API分支未重新验收。远端Release必须由外层在提交后发布，附件下载/安装尚待发布后复核，本地成功不冒充远端验收通过。

@@ -255,7 +255,7 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
     if(u->source_open) return sources(u,r,x,y,w);
     float start=y;
     render_rect(r,(Rect){x,y,w,82},20,TINT);
-    text(r,x+18,y+32,20,TEXT,"LX Music C"); text(r,x+18,y+60,13,ACCENT,"1.0.0 / 设置"); y+=96;
+    text(r,x+18,y+32,20,TEXT,"LX Music C"); text(r,x+18,y+60,13,ACCENT,"1.1.0 / 设置"); y+=96;
     y=wrapped(r,x,y,w,12,ACCENT,u->settings.message); y+=10;
     y=wrapped(r,x,y,w,13,TEXT,u->notifications==1?"通知已开启":"通知未开启：可按需授权或前往系统设置");
     y=wrapped(r,x,y+4,w,12,MUTED,u->notifications==2?
@@ -269,7 +269,7 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
     char cache_count[96]; snprintf(cache_count,sizeof(cache_count),"%d 首 / %.1f MiB / 上限 %llu MiB",u->cache.total,
         (double)u->cache.bytes/CACHE_MIB,(unsigned long long)(u->cache.limit/CACHE_MIB));
     const char *values[]={source_count,cache_count,u->settings.wifi_only?"已开启 / 点击关闭":"已关闭 / 点击开启",
-        themes[u->settings.theme],"播放服务与通知","本地优先","LXMusicC 1.0.0 / Android 8.0+"};
+        themes[u->settings.theme],"播放服务与通知","本地优先","LXMusicC 1.1.0 / Android 8.0+"};
     const char *details[]={"粘贴导入与音源管理","公共 Music 目录 / 离线播放", "", "",
         "支持通知栏、锁屏与耳机控制；输出跟随系统；来电暂时打断可恢复",
         "数据保存在本机；音源导入不执行，搜索和自检会运行可信脚本并联网；清除应用数据会丢失列表与设置",

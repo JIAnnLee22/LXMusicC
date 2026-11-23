@@ -12,8 +12,8 @@ android {
         applicationId = "jiannlee22.lxmusicc"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
 
         ndk {
             // 真机（arm64-v8a）与模拟器（x86_64）各一个 ABI。

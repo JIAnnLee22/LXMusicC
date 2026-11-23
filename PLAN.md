@@ -84,7 +84,7 @@
   - 视觉细节：按压反馈、选中态、Snackbar 提示；系统字体缩放（fontScale）下文字不裁切
   - 验收：连续操作 10 分钟不崩不卡；旋转、后台回来、从通知进入都符合预期；空状态与错误提示可读
 
-- [ ] `14-release-1.1` 发布 1.1.0
+- [x] `14-release-1.1` 发布 1.1.0
   - `versionName`/`versionCode` 升到 `1.1.0`，CHANGELOG 与 README 功能说明更新（系统键盘、系统媒体控制）
   - 补全 `docs/BRIDGE.md`（IME 与媒体服务桥）与 `docs/ARCHITECTURE.md`
   - 不要自己打 tag：`pi-loop.sh` 完成时按 `versionName` 打 `v1.1.0`

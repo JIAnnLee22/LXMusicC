@@ -124,3 +124,10 @@
 - **授权不绑架播放**：虽然媒体会话通知豁免POST_NOTIFICATIONS，本条按验收提供设置内主动授权、拒绝说明与系统通知设置入口；不在启动/播放时强制索取，拒绝仍可听歌。只读取全局通知开关，具体渠道状态由用户在系统检查，不把未授权误写成媒体一定不能显示。
 - **实例交接修复**：实测任务/通知启动可出现新Activity先create、旧实例后destroy；singleTask不能保证native线程不重叠。旧静态Engine被覆盖后cache_stop可能join新worker、主线程卡在NativeActivity.onDestroy。用进程级引擎所有权串行化初始化和完整清理；等待的新native线程继续消费glue生命周期命令，不用阻塞Android主线程的粗暴互斥。媒体服务仍独立播放，通知打开标记只由resumed实例消费。
 - **交付范围**：只完成13，14-release-1.1与版本号不动；README仅功能/使用，JNI与架构归docs。不新增Java、SDK或测试用例，不提交本地APK/数据/截图，不修改workflow、不手动打tag或建Release。
+
+## 14-release-1.1
+
+- **最小发布范围**：versionName=1.1.0、versionCode从2递增至3（Android要求整数，不把1.1.0用作code）；同步纯C设置/关于。只补发布功能说明、IME/媒体协议边界和架构索引，不改业务状态机、不新增JNI、Java/Kotlin、依赖或测试用例。
+- **发布时序**：沿用10-release的本地签名Release验收方式。勾选代表发布准备交付；v1.1.0标签、Release和附件必须由外层循环在提交后生成，远端附件下载/安装需发布后复核。本轮不手动发布、不上传本地APK、不变更workflow触发；过时的MILESTONE记录留给外层在真正生成摘要时更新。
+- **版本来源与签名**：外层release_tag已读取Gradle versionName，本轮只修正硬编码1.0.0的完成提示/注释，不重构bootstrap历史模板。保留可选专用证书与默认调试证书签署不可调试Release的方案，不擅建私钥；跨构建签名变化仍可能阻止覆盖更新。
+- **验收边界**：只用既有设备与现有公开LX预览示例手工走真实HTTP/音频/缓存/系统媒体路径，本地输入、截图、备份、日志和APK不提交；模拟器结果不冒充物理蓝牙、车机或所有厂商输入法通过。

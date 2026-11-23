@@ -6,7 +6,8 @@
 #
 # 发布节奏：每 MILESTONE_HOURS（默认 6）小时打一个 `snapshot-*` 标签并推送，
 # 只有 tag 推送才会触发 GitHub Actions 构建并发布 Release（附 APK）。
-# 项目全部完成时打 `v1.0.0` 正式标签，同样由 CI 构建发布。平时提交不产出安装包。
+# 项目全部完成时按 app/build.gradle.kts 的 versionName 打 `v<版本>` 正式标签。
+# 同样由 CI 构建发布，平时提交不产出安装包。
 set -Eeuo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -1270,7 +1271,7 @@ main() {
             fi
             run_verify "$LOG_DIR/final-build.log" || warn "最后一次构建验证失败，请检查"
             make_milestone release || warn "正式版里程碑没有完成，稍后重试"
-            log "下一步：在 GitHub 的 Actions/Releases 里确认 v1.0.0 的安装包"
+            log "下一步：在 GitHub 的 Actions/Releases 里确认 $(release_tag) 的安装包"
             exit 0
         fi
 
