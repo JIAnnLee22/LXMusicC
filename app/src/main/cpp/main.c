@@ -9,6 +9,7 @@
 #include "library_ui.h"
 #include "ime_ui.h"
 #include "ime_bridge.h"
+#include "playback_store.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/keycodes.h>
@@ -225,6 +226,7 @@ void android_main(struct android_app *app) {
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
     ime_bridge_start(app->looper);
     playback_ui(app->looper);
+    if(!playback_store_start(app->activity->internalDataPath)) LOGE("playback snapshot worker failed");
     if(!library_start(app->activity->internalDataPath,app->looper)) {
         snprintf(e.ui.library.message,256,"音乐库启动失败，请退出后重试");
         LOGE("library worker failed");
@@ -251,6 +253,10 @@ void android_main(struct android_app *app) {
         if(result==ALOOPER_POLL_ERROR) { LOGE("looper failed"); break; }
         if(result>=0 && source) source->process(app,source);
         if(app->destroyRequested) break;
+        if(playback_take_open()) {
+            ui_cancel(&e.ui); e.ui.ime_target=0; e.ui.input_open=false;
+            e.ui.state.tab=2; e.ui.state.scroll[2]=0; e.ui.velocity=0; e.dirty=true;
+        }
         if(playback_view(&e.ui.playback)) { ui_player_sync(&e.ui); e.dirty=true; }
         const char *cover_url=e.ui.playback.count?e.ui.playback.current.song.cover:"";
         if(strcmp(cover_url,e.cover_url) || e.ui.cover_retry_requested) {

@@ -339,3 +339,36 @@ C 规范化前 30 项（has_more 标记截断），逐字段检查类型、UTF-8
 - 地址框用英文键盘输入 `https://example.com/lx-ime-invalid.js`，回车进入既有下载流程并显示HTTP404，未新增音源；失败后可再次编辑。分屏中输入法位于屏幕下方，顶部应用输入框与导航未遮挡。
 - 截图/系统状态检查1080×2424竖屏、2424×1080横屏、应用与Settings上下分屏（应用窗口1080×1199）：IME输入目标为透明EditText，键盘展开与收起布局正常；旋转后EditorInfo仍为0x12000003（SEARCH + NO_EXTRACT_UI + NO_FULLSCREEN）。第一返回隐藏IME并留在当前页。无本轮应用崩溃日志。
 - Android15 arm64真机覆盖安装/启动成功；该机有搜狗输入法，但adb触摸注入被INJECT_EVENTS安全限制拒绝，未绕过安全设置。**真机搜狗/Gboard中文候选与API26–29后备布局尚未完成设备验收**，模拟器结果不冒充真机验证；正式设备复核仍需在可交互设备执行。
+
+## 12-media-services：媒体库、外部队列与恢复
+
+本节替代05/07/08中「单曲系统时间线」「队列/模式不跨进程保存」的旧阶段限制。
+
+| 模块 | 职责 |
+| --- | --- |
+| `media_catalog.[ch]` | C媒体目录、稳定歌曲ID/过期结果校验、有界列表选曲、系统时间线JSON序列化、媒体查询JNI |
+| `library.[ch]` / `search.[ch]` | 独立于UI浏览位置的分页内存查询；库只向媒体worker公开已成功加载/提交的快照 |
+| `playback.[ch]` / `playback_store.[ch]` | 唯一业务队列、模式、切歌/选曲、队列serial、快照恢复和后台原子持久化 |
+| `MediaCatalog.kt` | MediaLibrarySession回调、单executor与Future、JSON→MediaItem系统类型适配、订阅变化通知；不做目录/歌曲业务判断 |
+| `PlaybackService.kt` | MediaLibraryService、完整队列输出镜像、焦点/noisy/媒体键/通知；C决定自动下一首与模式 |
+| `SourceActivity.kt` / `main.c` / manifest | singleTask唤醒，onCreate/onNewIntent→C邮箱→播放页；服务与媒体键对外组件登记 |
+
+### 状态与线程
+- C仍唯一拥有业务队列，外部输入只允许C目录ID；ID解析拒绝非规范数字、溢出和尾随内容。收藏512首时按所选歌曲所在240首窗口入队，歌单最多240首；浏览分页不改变C界面的页码/筛选条件。进程内搜索结果有revision，队列有独立serial，失效ID不映射到新列表的同索引。
+- Library worker独占可写Store；publish时在短锁内复制到额外5.32MiB的已提交快照，媒体查询线程从该快照分页复制，不与fsync/rename共锁，不读取修改一半的关系。首次启动受独立start_lock串行化，服务初始化不解除已有UI looper；首次媒体查询只在executor等待库读取完成。后台历史仍由原库worker保存。
+- 服务先建立空MediaLibrarySession，再由MediaCatalog executor只读加载缓存索引、启动库/队列worker并等待恢复；成功后主线程登记nativeReady。即使未创建Activity，也有缓存URI查找、收藏/歌单/最近播放与上次队列。Activity启动仍走原缓存worker探测/修复；服务只读索引，不扫描公共音乐目录、不修改文件、不执行音源脚本。
+- C→applyQueue在播放锁内序列化完整系统镜像（标准UTF-8 JSON，复用已vendor QuickJS进行安全转义；不给JS执行外部脚本），Kotlin仅post，不能同步回调C。Media3完成onSetMediaItems的Future后才在同一主线程处理其系统镜像；wrapper的setMediaItems不重复加载，所有选曲/时间线seek都回C校验。按队列serial验证seek，避免迟到的旧时间线索引误选新队列。
+- ExoPlayer配置pauseAtEndOfMediaItems，内部不持有循环/随机策略；中间曲目的END_OF_MEDIA_ITEM以及末曲STATE_ENDED按generation去重并回C续播。加载期间禁止结束/状态回调改写C，旧generation结果丢弃；通知、锁屏、蓝牙媒体键、客户端上下首走同一个C状态机。
+- MediaBrowser支持现代分页与legacy订阅，未分页legacy请求只在后台分块读取有界目录。订阅目录最多128个，每秒最多排一个刷新任务，比较版本及一项元数据，变化才在主线程notifyChildrenChanged；断连清订阅。搜索/目录浏览不触发HTTP；主/GL线程不做磁盘IO。完整ID、JNI和对外命令见BRIDGE.md。
+
+### 队列持久化
+- 私有 `lx-playback-v1.bin`：8字节magic `LXPQ 01 00 00 00`、u32结构长度、1296032字节PlaybackSnapshot（count/index/mode、毫秒position、serial及最多240个SearchItem），文件总1296044字节；当前两种64位ABI用static_assert固定，未来结构变化必须显式升版迁移。加载检查精确长度/EOF、数量/索引/模式/位置，以及每项UTF-8/字段终止/HTTP(S)/有限时长；损坏不恢复，不改音乐库/缓存文件。
+- 进程级worker通过cond睡眠；选曲/控制/模式变化和进度跨5秒区间时置dirty，250ms合并信号。worker先在短播放锁内复制内存，解锁后写0600同目录tmp、fflush/fsync/close、rename；无主线程IO。读取后的恢复只有在尚无活动队列/generation时生效，不覆盖用户抢先选的新队列。
+- 只恢复队列、当前索引/位置和模式，始终暂停；不保存播放请求、随机历史、Activity状态或网络搜索结果。缓存URI从索引重新解析，不把过期临时缓冲当离线音频；远程直链过期仍需重新搜索。未完成的250ms合并/写盘或末尾约5秒进度可能丢失，不承诺目录fsync/断电事务；写失败记录LXMusicC并在下次更新重试。
+
+### 本轮验证与未覆盖项
+- 最终 `./scripts/build.sh` 与 `./scripts/build.sh :app:lintDebug` 均成功，arm64-v8a/x86_64及Kotlin编译通过，lint为0错误/11警告（既有版本/manifest提示，媒体服务有意exported）。修正Media3旧错误常量别名引起的lint注解不匹配，采用SessionError.ERROR_BAD_VALUE。未新增测试用例、Java、依赖SDK、工作流或版本变更。本地数据、截图和APK不提交。
+- Android15 arm64真机覆盖安装后，`adb shell cmd media_session list-sessions` 列出LXMusicC会话，dumpsys含媒体键Receiver与SessionActivity；该机未注入触摸。Android17模拟器使用已导入的真实LX iTunes预览音源及既有收藏/历史数据，媒体会话实际PLAYING、AAC预览长度约30秒，系统队列size=5。
+- adb媒体命令pause/play令会话PAUSED/PLAYING；next由Love/Keyshia Cole切至LOVE/Jhené Aiko、active item id=1，previous返回；自然到达预览末尾后自动切到下一首、队列仍5首。不是仅修改UI占位元数据。最终APK的通知卡片实际点击暂停有效，系统进度条seek使暂停位置21587→17741ms；点击卡片返回正在播放。息屏时会话保持PLAYING、位置20757ms，息屏媒体pause变为PAUSED、位置20828ms。
+- force-stop后重开界面并启动服务，恢复5首队列及暂停位置830ms；另一次force-stop后仅启动服务、保持桌面在前台，仍恢复5首、暂停位置11078ms，随后adb play可实际播放。OPEN_PLAYER冷启动截图为正在播放；重复唤醒复用singleTask，避免多个C引擎争用EGL。
+- 模拟GSM来电后会话PAUSED、位置5277ms；取消来电恢复PLAYING、位置5282ms。物理蓝牙/车机、拔耳机、ducking实测及独立MediaBrowser客户端的完整目录选曲尚无设备/客户端覆盖；noisy受保护广播被shell拒绝，未绕过系统权限，代码沿用Media3官方焦点/noisy/路由。需后续设备复核，不把adb媒体键等同于物理蓝牙验收。

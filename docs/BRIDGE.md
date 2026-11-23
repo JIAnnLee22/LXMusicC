@@ -81,9 +81,9 @@ HTTP 支持 GET/POST/PUT/DELETE/PATCH/HEAD、请求头和 UTF-8 正文；仅无�
 
 C 的 `playback_bridge_start/apply` 检查 attach/GetObjectClass/GetMethodID/GlobalRef/局部帧/字节数组分配写入/CallBooleanMethod 的结果与异常；清异常并用 LXMusicC 记录，不使用 modified UTF-8 传歌曲元数据。service 全局引用只由 bridge_lock 保护；nativeReady/nativeGone **先释放 bridge_lock，再进入播放锁**。C 调用 apply 时持播放锁，Kotlin 仅 post，禁止同步回调 C，避免重入与锁反转。
 
-播放快照/队列用独立 playback.lock；进度回调只有内容变化才发布。UI 订阅的 ALooper 在锁内 acquire/release，Activity 暂停或退出解除订阅，不让息屏回调唤醒 GL 线程；恢复重新订阅并读取最新快照。服务不持有 Activity，Activity 的 closing、HTTP 取消和 source/search_stop 均不停止播放。进程死亡不恢复队列，也不从后台擅自重启播放。
+播放快照/队列用独立 playback.lock；进度回调只有内容变化才发布。UI 订阅的 ALooper 在锁内 acquire/release，Activity 暂停或退出解除订阅，不让息屏回调唤醒 GL 线程；恢复重新订阅并读取最新快照。服务不持有 Activity，Activity 的 closing、HTTP 取消和 source/search_stop 均不停止播放。12 阶段增加后台队列持久化及暂停恢复，详见下文；仍不从后台擅自发声。
 
-Media3 负责系统音频焦点与 noisy（拔耳机）处理；瞬态焦点丢失暂停、恢复后继续，永久丢失后手动播放。前台提升失败由 MediaSessionService.Listener 转为暂停和可读错误。媒体会话通知豁免 Android 13 POST_NOTIFICATIONS 运行时授权，因此不请求无关通知权限；服务声明 mediaPlayback 类型及对应前台权限、WAKE_LOCK。外部媒体控制可控制播放/seek/切歌，但不能替换或修改 C 队列。
+Media3 负责系统音频焦点与 noisy（拔耳机）处理；瞬态焦点丢失暂停、恢复后继续，永久丢失后手动播放。前台提升失败由 MediaSessionService.Listener 转为暂停和可读错误。媒体会话通知豁免 Android 13 POST_NOTIFICATIONS 运行时授权，因此不请求无关通知权限；服务声明 mediaPlayback 类型及对应前台权限、WAKE_LOCK。12 阶段允许以媒体库 ID 选曲或按系统时间线选曲；不允许注入外部 URL 或任意编辑 C 队列。
 
 ## 公共目录缓存（06-cache）
 
@@ -150,3 +150,26 @@ HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 
 - 返回先收键盘：EditText onKeyPreIme、系统 IME 隐藏通知与 C ui_back 都收敛为取消输入会话；随后才执行原页面返回。onPause 隐藏并同步最终正文，onDestroy 清 listener/View；C 退出先关闭桥/释放 looper。manifest 增加 screenLayout configChanges，避免分屏因该项重建 Activity 丢编辑文本。
 
 原 `requestSearchPaste/nativePaste` ABI 保留兼容，但搜索/库页的粘贴按钮已转为上述 IME 选区粘贴；音源完整正文仍走原 `requestSourcePaste`。
+
+## 系统媒体库与恢复（12-media-services）
+
+对外组件 `jiannlee22.lxmusicc/.PlaybackService` 现为 Media3 1.8.0 `MediaLibraryService`，兼容 `MediaSessionService` 与平台 `android.media.browse.MediaBrowserService` 绑定；manifest 同时登记三种 action。`androidx.media3.session.MediaButtonReceiver` 接收系统媒体键并支持播放恢复；强行停止后的重启与前台服务限制由系统决定，不绕过限制。允许所有标准控制器连接，因此客户端能够读取音乐库信息；不提供自定义命令、任意 URL、脚本执行或库修改接口。
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| MediaCatalog → C | `nativeBoot` | `([B)Z` | 单一媒体 executor；不得在主/GL线程调用 | 标准 UTF-8 私有目录，1..1023字节；只读加载缓存索引、幂等启动进程级库/队列worker，等待首次队列读取。true=初始化成功；随后主线程才调用既有 nativeReady |
+| MediaCatalog → C | `nativeQuery` | `(I[BIIJ)[B` | 同一媒体 executor | action、UTF-8 ID、page、pageSize、positionMs；0浏览子项、1读条目、2选曲并以暂停状态替换C队列、3获取恢复队列。page≥0、size=1..100、乘积不溢出、position=0..86400000；ID≤255字节。成功返回标准UTF-8 JSON；无效/过期ID、内存不足为null，由Media3返回失败，不接受客户端URI/元数据 |
+| C → PlaybackService | `applyQueue` | `([BJZ)Z` | 持播放锁的调用线程，仅 Handler.post；执行在Android主线程 | JSON队列镜像、generation、autoplay；true仅表示入队。替代原applyPlayback的LOAD路径；JSON含items[{id,title,artist,album,duration,url}]、index、position，最多240首，URL由C优先解析为缓存content URI |
+| PlaybackService → C | `nativeSeek` | `([BJ)V` | Android主线程，外部时间线选曲 | UTF-8 queue/serial/index ID≤95字节及positionMs；C同时验证队列serial、索引及位置，过期镜像不误选新队列；保留原播放/暂停意图 |
+| SourceActivity → C | `nativeOpenPlayer` | `()V` | Android主线程，onCreate/onNewIntent | 仅置加锁唤醒标记并wake；GL消费后切tab=2、取消输入/手势。无IO，不直接访问Ui，冷启动前到达也保留 |
+
+既有 `applyPlayback(I[B[B[BJJZ)Z` ABI 保留，当前只承载2/3/4/8；三个数组均null，LOAD不再走该函数。`nativeCommand(IJ)V`、`nativeState(JIZZJJ[B)V` 和 `nativeCanSkip(I)Z` ABI不变。C→Java仍检查attach、局部帧、GlobalRef、方法/数组分配写入、调用结果与异常；新增Java→C数组入口检查长度、读取异常、NUL/UTF-8、数字范围，数组复制后即释放，不保留借用引用。异常清除后记录LXMusicC。
+
+### 可浏览结构与控制协议
+- 根ID=`root`；子目录 `search`（本次进程已有搜索结果）、`favorites`、`playlists`、`recent`、`queue`；歌单目录为 `list/<稳定listId>`。无音源/无内容/冷启动无搜索结果返回空items，不触发联网搜索。
+- 歌曲ID：`lib/<listId>/<稳定trackId>`（0收藏、1历史、≥2歌单）、`search/<结果revision>/<索引>`、`queue/<队列serial>/<索引>`。所有ID由C生成/校验，结果更新后旧搜索ID失败；队列serial只在替换时变化，不随每秒进度变化。
+- MediaBrowser支持getLibraryRoot/getItem/getChildren/subscribe/unsubscribe；现代分页每页1..100项。旧版MediaBrowserCompat未分页订阅的MAX_VALUE请求在executor内分成100项读取，目录硬上限512首，最多六页，不把全库1024首一起扫描进UI。订阅目录约每秒比较C版本及首项快照，仅变化时通知；订阅总量上限128。
+- MediaController支持play/pause/stop/next/previous/seekTo/seekTo(index,position)，以及 `setMediaItem(MediaItem.Builder().setMediaId(id).build())` → prepare/play。一次选一个媒体库ID，由C生成其所在列表的最多240首窗口；客户端不能add/remove/move、传入自定义队列、设置随机/循环/倍速（模式仍在C页面管理）。平台控制器也可使用playFromMediaId/skipToQueueItem。
+- onSetMediaItems在executor完成C选曲、先投递applyQueue，再完成Future；Media3在同一主线程随后处理setMediaItems，wrapper此时不重复修改输出，prepare/play回C执行。系统时间线是完整C队列镜像，不再是单曲；ExoPlayer pauseAtEndOfMediaItems阻止自行跳歌，结束事件按generation去重后由C决定下一首/循环/随机。
+- Media3继续负责焦点、瞬态失焦恢复、音乐ducking、noisy暂停与系统路由；不重复申请焦点。ducking仅改变系统播放器音量乘子，不是用户暂停、不另设C业务状态。
+- SessionActivity的PendingIntent使用 `jiannlee22.lxmusicc.OPEN_PLAYER`、SINGLE_TOP/CLEAR_TOP；Activity为singleTask，冷/热唤醒均进入正在播放，避免并发创建两个持有静态C引擎的NativeActivity。不增加可见Kotlin UI。

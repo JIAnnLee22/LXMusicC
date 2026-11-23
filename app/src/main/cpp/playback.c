@@ -2,6 +2,7 @@
 #include "playback_bridge.h"
 #include "cache.h"
 #include "library.h"
+#include "playback_store.h"
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,7 +15,8 @@ static struct {
     SearchItem *queue;
     PlaybackView view;
     ALooper *looper;
-    bool starting;
+    bool starting,open_player;
+    unsigned serial;
 } playback={.lock=PTHREAD_MUTEX_INITIALIZER};
 
 /* 随机模式历史栈：容量等于队列长度（≤SEARCH_RESULT_LIMIT），静态有界、不分配。
@@ -74,22 +76,63 @@ static void publish(void) {
     if(playback.looper) ALooper_wake(playback.looper);
 }
 static void apply(int action) {
-    if(playback.view.connected && !playback_bridge_apply(action,&playback.view)) {
+    if(playback.view.connected && !playback_bridge_apply(action,&playback.view,playback.queue,playback.serial)) {
         snprintf(playback.view.error,256,"播放命令失败，请重新点击播放");
         playback.view.requested=false;
     }
     publish();
+    playback_store_dirty();
 }
 /* 换曲：清空旧曲状态并递增代次，服务与解码器的迟到回调按代次丢弃。 */
-static void load(int index) {
+static void load_at(int index,int64_t position,bool autoplay) {
     PlaybackView *v=&playback.view;
     v->index=index; v->current=playback.queue[index];
     v->local_uri[0]=0;
     cache_lookup(&v->current,v->local_uri);
-    v->position=v->duration=0; v->state=2; v->playing=false;
-    v->requested=true; v->error[0]=0; ++v->generation;
+    v->position=position<0?0:position; v->duration=0; v->state=2; v->playing=false;
+    v->requested=autoplay; v->error[0]=0; ++v->generation;
     history_push(index);
     apply(PLAYBACK_LOAD);
+}
+static void load(int index) { load_at(index,0,true); }
+void playback_open_player(void) {
+    pthread_mutex_lock(&playback.lock); playback.open_player=true; publish(); pthread_mutex_unlock(&playback.lock);
+}
+bool playback_take_open(void) {
+    pthread_mutex_lock(&playback.lock);
+    bool open=playback.open_player; playback.open_player=false;
+    pthread_mutex_unlock(&playback.lock); return open;
+}
+bool playback_snapshot(PlaybackSnapshot *s) {
+    pthread_mutex_lock(&playback.lock);
+    s->count=playback.view.count; s->index=playback.view.index; s->mode=playback.view.mode;
+    s->position=playback.view.position; s->serial=playback.serial;
+    if(s->count) memcpy(s->items,playback.queue,(size_t)s->count*sizeof(*s->items));
+    pthread_mutex_unlock(&playback.lock); return s->count>0;
+}
+void playback_restore(const PlaybackSnapshot *s) {
+    SearchItem *queue=malloc((size_t)s->count*sizeof(*queue)); if(!queue) return;
+    memcpy(queue,s->items,(size_t)s->count*sizeof(*queue));
+    pthread_mutex_lock(&playback.lock);
+    if(!playback.view.generation && !playback.view.count) {
+        free(playback.queue); playback.queue=queue; queue=NULL;
+        playback.view.count=s->count; playback.view.index=s->index; playback.view.mode=s->mode;
+        playback.view.current=s->items[s->index]; playback.view.position=s->position;
+        playback.view.state=1; playback.view.requested=false; ++playback.view.generation; ++playback.serial;
+        cache_lookup(&playback.view.current,playback.view.local_uri);
+        history_reset(s->index);
+        if(playback.view.connected) apply(PLAYBACK_LOAD); else publish();
+    }
+    pthread_mutex_unlock(&playback.lock); free(queue);
+}
+void playback_seek_index(unsigned serial,int index,int64_t position) {
+    pthread_mutex_lock(&playback.lock);
+    if(serial==playback.serial && index>=0 && index<playback.view.count) {
+        if(index==playback.view.index) {
+            playback.view.position=position<0?0:position; apply(PLAYBACK_SEEK);
+        } else load_at(index,position,playback.view.requested);
+    }
+    pthread_mutex_unlock(&playback.lock);
 }
 void playback_ui(ALooper *looper) {
     pthread_mutex_lock(&playback.lock);
@@ -105,17 +148,20 @@ bool playback_view(PlaybackView *view) {
     pthread_mutex_unlock(&playback.lock);
     return changed;
 }
-bool playback_replace(const SearchItem *items,int count,int index) {
+bool playback_replace_at(const SearchItem *items,int count,int index,int64_t position,bool autoplay) {
     if(!items || count<1 || count>SEARCH_RESULT_LIMIT || index<0 || index>=count) return false;
     SearchItem *queue=malloc((size_t)count*sizeof(*queue));
     if(!queue) return false;
     memcpy(queue,items,(size_t)count*sizeof(*queue));
     pthread_mutex_lock(&playback.lock);
-    free(playback.queue); playback.queue=queue; playback.view.count=count;
+    free(playback.queue); playback.queue=queue; playback.view.count=count; ++playback.serial;
     history_reset(index);                 // 新队列从当前曲开始重置随机历史
-    load(index);
+    load_at(index,position,autoplay);
     pthread_mutex_unlock(&playback.lock);
     return true;
+}
+bool playback_replace(const SearchItem *items,int count,int index) {
+    return playback_replace_at(items,count,index,0,true);
 }
 void playback_command(int action,int64_t position) {
     pthread_mutex_lock(&playback.lock);
@@ -125,7 +171,7 @@ void playback_command(int action,int64_t position) {
         if(position>=0 && position<=PLAYBACK_MODE_SHUFFLE) {
             v->mode=(int)position;
             history_reset(v->index);
-            publish();
+            publish(); playback_store_dirty();
         }
         pthread_mutex_unlock(&playback.lock);
         return;
@@ -244,9 +290,11 @@ void playback_state(uint64_t generation,int state,bool playing,bool requested,
     if(generation==v->generation && v->connected &&
        (v->state!=state || v->playing!=playing || v->requested!=requested ||
         v->position!=position || v->duration!=duration || strcmp(v->error,error?error:""))) {
+        bool save=v->position/5000!=position/5000 || v->requested!=requested;
         v->state=state; v->playing=playing; v->requested=requested;
         v->position=position; v->duration=duration;
         snprintf(v->error,256,"%s",error?error:""); publish();
+        if(save) playback_store_dirty();
     }
     pthread_mutex_unlock(&playback.lock);
 }

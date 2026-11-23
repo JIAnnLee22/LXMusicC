@@ -16,6 +16,7 @@ class SourceActivity : NativeActivity() {
     private external fun nativeSearchCancelled(token: Long): Boolean
     private external fun nativeCoverCancelled(token: Long): Boolean
     private external fun nativeCacheNetworkAllowed(flags: Int): Boolean
+    private external fun nativeOpenPlayer()
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,6 +26,15 @@ class SourceActivity : NativeActivity() {
             android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
             else android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         ime = ImeBridge(this)
+        if (intent?.action == "jiannlee22.lxmusicc.OPEN_PLAYER") nativeOpenPlayer()
+    }
+
+    override fun onNewIntent(intent: android.content.Intent?) {
+        super.onNewIntent(intent)
+        if (intent != null) {
+            setIntent(intent)
+            if (intent.action == "jiannlee22.lxmusicc.OPEN_PLAYER") nativeOpenPlayer()
+        }
     }
 
     /** 二进制传输仅在 C 封面线程执行；解码和缓存策略留在 C。 */

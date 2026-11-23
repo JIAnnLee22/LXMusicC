@@ -103,9 +103,9 @@ fail:
 static bool field(const char *s,size_t capacity) {
     size_t n=strnlen(s,capacity); return n<capacity && (!n || source_utf8(s,n));
 }
-static bool load(char error[256]) {
-    Store *s=cache.store; s->limit=1024*CACHE_MIB; s->next_id=1;
-    FILE *f=fopen(cache.path,"rb");
+static bool load(Store *s,const char *path,char error[256]) {
+    s->limit=1024*CACHE_MIB; s->next_id=1;
+    FILE *f=fopen(path,"rb");
     if(!f) {
         if(errno==ENOENT) return true;
         snprintf(error,256,"无法读取缓存索引，已停止写入"); return false;
@@ -226,7 +226,7 @@ static void change(int action,const SearchItem *item,uint32_t id,uint64_t limit,
 }
 static void *worker(void *unused) {
     char error[256]="";
-    cache.healthy=load(error);
+    cache.healthy=load(cache.store,cache.path,error);
     if(cache.healthy) {
         char ignored[256]=""; io(4,NULL,NULL,0,NULL,NULL,ignored);
         refresh(error);
@@ -248,8 +248,11 @@ static void *worker(void *unused) {
 }
 bool cache_start(const char *directory,CacheIo callback,SourceWake wake,void *context) {
     cache.store=calloc(1,sizeof(Store));
+    pthread_mutex_lock(&cache.lock);
     if(!cache.lookup) cache.lookup=calloc(CACHE_LIMIT,sizeof(CacheEntry));
-    if(!cache.store || !cache.lookup) goto fail;
+    bool allocated=cache.store && cache.lookup;
+    pthread_mutex_unlock(&cache.lock);
+    if(!allocated) goto fail;
     pthread_mutex_lock(&cache.lock);
     cache.io=callback; cache.wake=wake; cache.context=context; cache.running=true; cache.pending=false;
     cache.page=0; cache.view.busy=true; ++cache.view.revision;
@@ -295,6 +298,24 @@ bool cache_view(CacheView *view) {
     bool changed=view->revision!=cache.view.revision;
     if(changed) *view=cache.view;
     pthread_mutex_unlock(&cache.lock); return changed;
+}
+/* 服务冷启动只读索引，不创建Activity、不探测或修改公共文件。 */
+void cache_media_load(const char *directory) {
+    Store *s=calloc(1,sizeof(*s)); if(!s) return;
+    char path[1100],error[256]="";
+    snprintf(path,sizeof(path),"%s/lx-cache-v1.bin",directory);
+    if(load(s,path,error)) {
+        pthread_mutex_lock(&cache.lock);
+        if(!cache.running) {
+            if(!cache.lookup) cache.lookup=calloc(CACHE_LIMIT,sizeof(CacheEntry));
+            if(cache.lookup) {
+                cache.lookup_count=(int)s->count;
+                memcpy(cache.lookup,s->entries,s->count*sizeof(CacheEntry));
+            }
+        }
+        pthread_mutex_unlock(&cache.lock);
+    }
+    free(s);
 }
 bool cache_lookup(const SearchItem *item,char uri[CACHE_URI_BYTES]) {
     bool found=false;

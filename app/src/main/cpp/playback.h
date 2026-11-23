@@ -33,6 +33,10 @@ typedef struct {
 void playback_ui(ALooper *looper);
 bool playback_view(PlaybackView *view);
 bool playback_replace(const SearchItem *items,int count,int index);
+bool playback_replace_at(const SearchItem *items,int count,int index,int64_t position,bool autoplay);
+void playback_seek_index(unsigned serial,int index,int64_t position);
+void playback_open_player(void);
+bool playback_take_open(void);
 void playback_command(int action,int64_t position);
 bool playback_can_skip(int delta);
 void playback_queue(PlaybackQueue *queue,int page);

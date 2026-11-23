@@ -29,5 +29,6 @@ bool cache_command(int action,const SearchItem *item,uint32_t id,uint64_t limit)
 void cache_page(int delta);
 bool cache_view(CacheView *view);
 /* 纯内存查找，播放锁可调用，不做IO或回调播放。 */
+void cache_media_load(const char *directory);
 bool cache_lookup(const SearchItem *item,char uri[CACHE_URI_BYTES]);
 #endif

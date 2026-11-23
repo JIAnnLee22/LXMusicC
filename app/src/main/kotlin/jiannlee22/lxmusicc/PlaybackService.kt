@@ -9,23 +9,29 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
+import org.json.JSONObject
 
 /** C 持有队列/控制策略；此类只适配 Android 音频、会话与前台通知。 */
 @UnstableApi
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
     private lateinit var output: ExoPlayer
-    private var session: MediaSession? = null
+    private var session: MediaLibrarySession? = null
+    private lateinit var catalog: MediaCatalog
     private val handler = Handler(Looper.getMainLooper())
     private var generation = 0L
     @Volatile private var closed = false
     private var failure: ByteArray? = null
+    private var updating = false
+    private var endedGeneration = -1L
+    private var registered = false
 
     private external fun nativeReady(): Boolean
     private external fun nativeGone()
@@ -33,6 +39,7 @@ class PlaybackService : MediaSessionService() {
     private external fun nativeState(generation: Long, state: Int, playing: Boolean,
         requested: Boolean, position: Long, duration: Long, error: ByteArray?)
     private external fun nativeCanSkip(delta: Int): Boolean
+    private external fun nativeSeek(id: ByteArray, position: Long)
 
     override fun onCreate() {
         super.onCreate()
@@ -42,6 +49,7 @@ class PlaybackService : MediaSessionService() {
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
                 setHandleAudioBecomingNoisy(true)
                 setWakeMode(C.WAKE_MODE_NETWORK)
+                pauseAtEndOfMediaItems = true
             }
             output.addListener(object : Player.Listener {
                 override fun onEvents(player: Player, events: Player.Events) { report() }
@@ -51,7 +59,10 @@ class PlaybackService : MediaSessionService() {
                     report()
                 }
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_ENDED) nativeCommand(7, generation)
+                    if (state == Player.STATE_ENDED) ended()
+                }
+                override fun onPlayWhenReadyChanged(value: Boolean, reason: Int) {
+                    if (!value && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) ended()
                 }
             })
             setListener(object : MediaSessionService.Listener {
@@ -62,13 +73,17 @@ class PlaybackService : MediaSessionService() {
                 }
             })
             val launch = PendingIntent.getActivity(this, 0,
-                Intent(this, SourceActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                Intent(this, SourceActivity::class.java).setAction(OPEN_PLAYER)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            session = MediaSession.Builder(this, Controls(output)).setSessionActivity(launch).build()
+            catalog = MediaCatalog(applicationContext)
+            session = MediaLibrarySession.Builder(this, Controls(output), catalog).setSessionActivity(launch).build()
             // NativeActivity 直接启动，无 MediaController 绑定，需主动注册以启用通知/前台提升。
             addSession(session!!)
-            if (!nativeReady()) { stopSelf(); return }
-            handler.post(tick)
+            catalog.boot { ok ->
+                if (!ok || !nativeReady()) { PlaybackStart.failed(); stopSelf() }
+                else { registered = true; handler.post(tick) }
+            }
         } catch (e: Exception) {
             Log.e("LXMusicC", "Cannot initialize playback service", e)
             PlaybackStart.failed()
@@ -78,29 +93,68 @@ class PlaybackService : MediaSessionService() {
 
     // 系统通知、锁屏和耳机命令全部回到 C，再调用原始 output，避免 Kotlin 维护队列。
     private inner class Controls(player: Player) : ForwardingPlayer(player) {
-        override fun play() { nativeCommand(2, 0) }
-        override fun pause() { nativeCommand(3, 0) }
-        override fun setPlayWhenReady(value: Boolean) { nativeCommand(if (value) 2 else 3, 0) }
-        override fun stop() { nativeCommand(8, 0) }
-        override fun seekTo(positionMs: Long) { nativeCommand(4, positionMs) }
-        override fun seekTo(mediaItemIndex: Int, positionMs: Long) { nativeCommand(4, positionMs) }
-        override fun seekToDefaultPosition() { nativeCommand(4, 0) }
-        override fun seekToDefaultPosition(mediaItemIndex: Int) { nativeCommand(4, 0) }
-        override fun seekBack() { nativeCommand(4, (output.currentPosition - 10_000).coerceAtLeast(0)) }
-        override fun seekForward() { nativeCommand(4, output.currentPosition + 10_000) }
-        override fun seekToNext() { nativeCommand(5, 0) }
-        override fun seekToPrevious() { nativeCommand(6, 0) }
-        override fun seekToNextMediaItem() { nativeCommand(5, 0) }
-        override fun seekToPreviousMediaItem() { nativeCommand(6, 0) }
+        private fun command(action: Int, position: Long = 0) { catalog.dispatch { nativeCommand(action, position) } }
+        override fun play() { command(2) }
+        override fun pause() { command(3) }
+        override fun setPlayWhenReady(value: Boolean) { command(if (value) 2 else 3) }
+        override fun stop() { command(8) }
+        override fun seekTo(positionMs: Long) { command(4, positionMs) }
+        override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+            if (mediaItemIndex !in 0 until output.mediaItemCount) return
+            val id = output.getMediaItemAt(mediaItemIndex).mediaId.toByteArray()
+            catalog.dispatch { nativeSeek(id, if (positionMs == C.TIME_UNSET) 0 else positionMs) }
+        }
+        override fun seekToDefaultPosition() { command(4) }
+        override fun seekToDefaultPosition(mediaItemIndex: Int) { seekTo(mediaItemIndex, 0) }
+        override fun seekBack() { command(4, (output.currentPosition - 10_000).coerceAtLeast(0)) }
+        override fun seekForward() { command(4, output.currentPosition + 10_000) }
+        override fun seekToNext() { command(5) }
+        override fun seekToPrevious() { command(6) }
+        override fun seekToNextMediaItem() { command(5) }
+        override fun seekToPreviousMediaItem() { command(6) }
+        // Callback已在C完成规范化并异步下发镜像，禁止框架绕过C再改一次队列。
+        override fun setMediaItem(item: MediaItem) {}
+        override fun setMediaItem(item: MediaItem, positionMs: Long) {}
+        override fun setMediaItem(item: MediaItem, resetPosition: Boolean) {}
+        override fun setMediaItems(items: List<MediaItem>) {}
+        override fun setMediaItems(items: List<MediaItem>, resetPosition: Boolean) {}
+        override fun setMediaItems(items: List<MediaItem>, index: Int, positionMs: Long) {}
         override fun hasNextMediaItem() = nativeCanSkip(1)
         override fun hasPreviousMediaItem() = nativeCanSkip(-1)
         override fun getAvailableCommands(): Player.Commands = super.getAvailableCommands().buildUpon()
             .add(Player.COMMAND_SEEK_TO_NEXT).add(Player.COMMAND_SEEK_TO_PREVIOUS)
             .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM).add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-            .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS).remove(Player.COMMAND_SET_MEDIA_ITEM).build()
+            .add(Player.COMMAND_SET_MEDIA_ITEM).add(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
+            .remove(Player.COMMAND_CHANGE_MEDIA_ITEMS).remove(Player.COMMAND_SET_REPEAT_MODE)
+            .remove(Player.COMMAND_SET_SHUFFLE_MODE).remove(Player.COMMAND_SET_SPEED_AND_PITCH).build()
         override fun isCommandAvailable(command: Int) = availableCommands.contains(command)
     }
 
+    private fun ended() {
+        if (!updating && registered && endedGeneration != generation) {
+            endedGeneration = generation
+            nativeCommand(7, generation)
+        }
+    }
+    /** C队列的系统时间线镜像；Exo不负责循环/随机/自动下一首。 */
+    fun applyQueue(data: ByteArray, token: Long, autoplay: Boolean): Boolean {
+        if (closed) return false
+        return handler.post {
+            if (closed) return@post
+            try {
+                val snapshot = JSONObject(data.toString(Charsets.UTF_8))
+                val items = MediaCatalog.items(snapshot)
+                updating = true
+                generation = token; failure = null
+                output.setMediaItems(items, snapshot.getInt("index"), snapshot.getLong("position"))
+                output.prepare()
+                output.playWhenReady = autoplay
+            } catch (e: Exception) {
+                Log.e("LXMusicC", "Cannot apply media queue", e)
+                failure = "队列加载失败，请重新选曲".toByteArray()
+            } finally { updating = false; report() }
+        }
+    }
     /** 任何 JNI 线程调用；只排入主线程，不同步回调 C，避免锁重入。 */
     fun applyPlayback(action: Int, url: ByteArray?, title: ByteArray?, artist: ByteArray?,
         position: Long, token: Long, autoplay: Boolean): Boolean {
@@ -108,15 +162,7 @@ class PlaybackService : MediaSessionService() {
         return handler.post {
             if (closed) return@post
             try {
-                if (action == 1) {
-                    generation = token
-                    failure = null
-                    output.setMediaItem(MediaItem.Builder().setUri(url!!.toString(Charsets.UTF_8))
-                        .setMediaMetadata(MediaMetadata.Builder().setTitle(title!!.toString(Charsets.UTF_8))
-                            .setArtist(artist!!.toString(Charsets.UTF_8)).build()).build(), position)
-                    output.prepare()
-                    output.playWhenReady = autoplay
-                } else if (token == generation) {
+                if (token == generation) {
                     when (action) {
                         2 -> {
                             failure = null
@@ -138,7 +184,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun report() {
-        if (closed || !::output.isInitialized) return
+        if (closed || updating || !registered || !::output.isInitialized) return
         nativeState(generation, output.playbackState, output.isPlaying, output.playWhenReady,
             output.currentPosition.coerceAtLeast(0), output.duration.coerceAtLeast(0), failure)
     }
@@ -146,12 +192,13 @@ class PlaybackService : MediaSessionService() {
         override fun run() {
             if (!closed) {
                 if (output.isPlaying) report()
+                session?.let { catalog.refresh(it) }
                 handler.postDelayed(this, 1000)
             }
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
     // 播放时移除最近任务不停止；暂停时允许系统回收，不创建无界空闲服务。
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!::output.isInitialized || !output.playWhenReady) stopSelf()
@@ -159,13 +206,18 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         closed = true
         handler.removeCallbacksAndMessages(null)
-        nativeGone()
+        if (::catalog.isInitialized) catalog.close()
+        if (registered) nativeGone()
+        registered = false
         session?.release()
         if (::output.isInitialized) output.release()
         super.onDestroy()
     }
 
-    companion object { init { System.loadLibrary("lxmusicc") } }
+    companion object {
+        const val OPEN_PLAYER = "jiannlee22.lxmusicc.OPEN_PLAYER"
+        init { System.loadLibrary("lxmusicc") }
+    }
 }
 
 /** 启动只发生在用户前台操作中；不持有 Activity。媒体会话通知无需 POST_NOTIFICATIONS。 */

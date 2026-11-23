@@ -1,4 +1,6 @@
 #include "playback_bridge.h"
+#include "media_catalog.h"
+#include <stdlib.h>
 #include <android/log.h>
 #include <jni.h>
 #include <pthread.h>
@@ -7,7 +9,7 @@
 static pthread_mutex_t bridge_lock=PTHREAD_MUTEX_INITIALIZER;
 static JavaVM *vm;
 static jobject service;
-static jmethodID apply_method;
+static jmethodID apply_method,queue_method;
 static bool clean(JNIEnv *env) {
     if(!(*env)->ExceptionCheck(env)) return true;
     (*env)->ExceptionClear(env);
@@ -30,22 +32,25 @@ static jbyteArray bytes(JNIEnv *env,const char *s) {
     (*env)->SetByteArrayRegion(env,result,0,n,(const jbyte *)s);
     return clean(env)?result:NULL;
 }
-bool playback_bridge_apply(int action,const PlaybackView *view) {
+bool playback_bridge_apply(int action,const PlaybackView *view,const SearchItem *queue,unsigned serial) {
     pthread_mutex_lock(&bridge_lock);
     bool attached=false,ok=false;
     JNIEnv *env=vm?environment(vm,&attached):NULL;
     if(env && service && apply_method) {
         jint frame=(*env)->PushLocalFrame(env,8);
         if(clean(env) && frame==JNI_OK) {
-            jbyteArray url=NULL,title=NULL,artist=NULL;
-            if(action==PLAYBACK_LOAD) {
-                url=bytes(env,view->local_uri[0]?view->local_uri:view->current.song.url);
-                title=bytes(env,view->current.song.name);
-                artist=bytes(env,view->current.song.artist);
-            }
-            if(action!=PLAYBACK_LOAD || (url && title && artist)) {
+            if(action==PLAYBACK_LOAD && queue_method) {
+                char *json=media_queue_json(queue,view,serial);
+                jbyteArray data=json?bytes(env,json):NULL;
+                free(json);
+                if(data) {
+                    jboolean result=(*env)->CallBooleanMethod(env,service,queue_method,data,
+                        (jlong)view->generation,(jboolean)view->requested);
+                    ok=clean(env) && result==JNI_TRUE;
+                }
+            } else {
                 jboolean result=(*env)->CallBooleanMethod(env,service,apply_method,(jint)action,
-                    url,title,artist,(jlong)view->position,(jlong)view->generation,(jboolean)view->requested);
+                    NULL,NULL,NULL,(jlong)view->position,(jlong)view->generation,(jboolean)view->requested);
                 ok=clean(env) && result==JNI_TRUE;
             }
             (*env)->PopLocalFrame(env,NULL);
@@ -82,11 +87,12 @@ JNIEXPORT jboolean JNICALL Java_jiannlee22_lxmusicc_PlaybackService_nativeReady(
         jclass cls=(*env)->GetObjectClass(env,self);
         if(clean(env) && cls) {
             jmethodID method=(*env)->GetMethodID(env,cls,"applyPlayback","(I[B[B[BJJZ)Z");
-            if(clean(env) && method) {
+            jmethodID queue=clean(env) && method?(*env)->GetMethodID(env,cls,"applyQueue","([BJZ)Z"):NULL;
+            if(clean(env) && method && queue) {
                 jobject ref=(*env)->NewGlobalRef(env,self);
                 if(clean(env) && ref) {
                     if(service) (*env)->DeleteGlobalRef(env,service);
-                    service=ref; vm=machine; apply_method=method; ok=true;
+                    service=ref; vm=machine; apply_method=method; queue_method=queue; ok=true;
                 }
             }
             (*env)->DeleteLocalRef(env,cls);
@@ -99,7 +105,7 @@ JNIEXPORT jboolean JNICALL Java_jiannlee22_lxmusicc_PlaybackService_nativeReady(
 JNIEXPORT void JNICALL Java_jiannlee22_lxmusicc_PlaybackService_nativeGone(JNIEnv *env,jobject self) {
     pthread_mutex_lock(&bridge_lock);
     if(service) (*env)->DeleteGlobalRef(env,service);
-    service=NULL; apply_method=NULL;
+    service=NULL; apply_method=queue_method=NULL;
     pthread_mutex_unlock(&bridge_lock);
     playback_gone();
 }

@@ -32,7 +32,8 @@ static struct {
     unsigned request;
     char path[1100],query[256];
     Command queue[COMMANDS];
-    Store *store;
+    Store *store,*published;
+    bool loaded;
     LibraryView view;
     ALooper *looper;
 } lib={.lock=PTHREAD_MUTEX_INITIALIZER,.cond=PTHREAD_COND_INITIALIZER};
@@ -41,7 +42,7 @@ static void wake(void) { if(lib.looper) ALooper_wake(lib.looper); }
 static bool field(const char *s,size_t cap) {
     size_t n=strnlen(s,cap); return n<cap && (!n || source_utf8(s,n));
 }
-static bool valid(const SearchItem *i) {
+bool library_valid_item(const SearchItem *i) {
     const SourceSong *s=&i->song;
     return field(i->source_name,sizeof(i->source_name)) && field(s->id,sizeof(s->id)) &&
         field(s->name,sizeof(s->name)) && s->name[0] && field(s->artist,sizeof(s->artist)) &&
@@ -99,7 +100,7 @@ static bool load(char message[256]) {
     ok=ok && s->tracks<=LIBRARY_TRACK_LIMIT && s->lists<=LIBRARY_LIST_LIMIT &&
         s->favorites<=FAVORITES && s->history<=HISTORY && s->next_track>0 && s->next_list>=2;
     for(uint32_t i=0;ok && i<s->tracks;++i) {
-        LibraryTrack *t=&s->track[i]; ok=t->id>0 && t->id<s->next_track && valid(&t->item);
+        LibraryTrack *t=&s->track[i]; ok=t->id>0 && t->id<s->next_track && library_valid_item(&t->item);
         for(uint32_t j=0;ok && j<i;++j) ok=t->id!=s->track[j].id && !same(&t->item,&s->track[j].item);
     }
     if(ok) ok=refs(s->favorite,s->favorites) && refs(s->recent,s->history);
@@ -134,6 +135,8 @@ static bool contains(const char *text,const char *query) {
 static void publish(const char *message) {
     pthread_mutex_lock(&lib.lock);
     LibraryView *v=&lib.view; Store *s=lib.store;
+    memcpy(lib.published,s,sizeof(*s));
+    lib.loaded=true; pthread_cond_broadcast(&lib.cond);
     v->request=lib.request;
     v->list=lib.list; v->page=lib.page; v->count=v->total=0;
     v->healthy=lib.healthy; v->busy=lib.count>0;
@@ -207,7 +210,7 @@ static const char *change(const Command *c) {
         if(!ids) return "歌单不存在";
         remove_id(ids,n,index_of(ids,*n,c->track)); return NULL;
     }
-    if(!valid(&c->item)) return "歌曲信息不合法";
+    if(!library_valid_item(&c->item)) return "歌曲信息不合法";
     if(c->action==LIB_ADD && !p) return "歌单不存在";
     uint32_t id=0;
     for(uint32_t i=0;i<s->tracks;++i) if(same(&s->track[i].item,&c->item)) { id=s->track[i].id; break; }
@@ -266,20 +269,60 @@ void library_ui(ALooper *looper) {
     pthread_mutex_unlock(&lib.lock);
 }
 bool library_start(const char *directory,ALooper *looper) {
+    /* Activity 与外部媒体服务可能同时首次启动。 */
+    static pthread_mutex_t start_lock=PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&start_lock);
     if(!lib.started) {
-        if(!directory || strlen(directory)+32>=sizeof(lib.path)) return false;
-        lib.store=calloc(1,sizeof(Store)); if(!lib.store) return false;
+        if(!directory || strlen(directory)+32>=sizeof(lib.path)) { pthread_mutex_unlock(&start_lock); return false; }
+        lib.store=calloc(1,sizeof(Store)); lib.published=calloc(1,sizeof(Store));
+        if(!lib.store || !lib.published) {
+            free(lib.store); free(lib.published); lib.store=lib.published=NULL;
+            pthread_mutex_unlock(&start_lock); return false;
+        }
         snprintf(lib.path,sizeof(lib.path),"%s/lx-library-v1.bin",directory);
         lib.view.busy=true; lib.view.revision=1;
         pthread_t thread;
         if(pthread_create(&thread,NULL,worker,NULL)) {
-            free(lib.store); lib.store=NULL; lib.view.busy=false;
+            free(lib.store); free(lib.published); lib.store=lib.published=NULL; lib.view.busy=false;
             snprintf(lib.view.message,256,"音乐库线程启动失败，请退出后重试");
-            ++lib.view.revision; return false;
+            ++lib.view.revision; pthread_mutex_unlock(&start_lock); return false;
         }
         pthread_detach(thread); lib.started=true;
     }
-    library_ui(looper); return true;
+    pthread_mutex_unlock(&start_lock);
+    if(looper) library_ui(looper);
+    return true;
+}
+/* 媒体worker读取已提交的不可变快照，不改变UI浏览位置、不等待磁盘锁。
+ * 最多复制240首；收藏超过240首时按选择所在窗口入队。 */
+unsigned library_revision(void) {
+    pthread_mutex_lock(&lib.lock); unsigned revision=lib.view.revision;
+    pthread_mutex_unlock(&lib.lock); return revision;
+}
+int library_media(int id,LibraryTrack *tracks,LibraryList *lists,int offset,int limit) {
+    pthread_mutex_lock(&lib.lock);
+    while(lib.started && !lib.loaded) pthread_cond_wait(&lib.cond,&lib.lock);
+    Store *s=lib.published;
+    int total=-1;
+    if(s && lib.loaded) {
+        const uint32_t *ids=NULL; uint32_t n=0;
+        if(id==-1) { total=(int)s->lists; }
+        else if(id==0) { ids=s->favorite; n=s->favorites; total=(int)n; }
+        else if(id==1) { ids=s->recent; n=s->history; total=(int)n; }
+        else for(uint32_t j=0;j<s->lists;++j) if(s->list[j].id==(uint32_t)id) {
+            ids=s->list[j].songs; n=s->list[j].count; total=(int)n; break;
+        }
+        for(int i=0;i<limit && offset+i<total;++i) {
+            int at=offset+i;
+            if(id==-1 && lists) {
+                List *p=&s->list[at]; lists[i].id=p->id; lists[i].count=(int)p->count;
+                snprintf(lists[i].name,256,"%s",p->name);
+            } else if(ids && tracks) {
+                for(uint32_t j=0;j<s->tracks;++j) if(s->track[j].id==ids[at]) { tracks[i]=s->track[j]; break; }
+            }
+        }
+    }
+    pthread_mutex_unlock(&lib.lock); return total;
 }
 unsigned library_browse(int id,int page,const char *query) {
     pthread_mutex_lock(&lib.lock);

@@ -29,12 +29,23 @@
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
 
         <!-- 系统桥接，仅挂载 1dp 透明 IME 输入目标，无可见 Kotlin UI。 -->
         <activity
             android:name=".SourceActivity"
+            android:launchMode="singleTask"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode|navigation"
             android:exported="true"
             android:enableOnBackInvokedCallback="false"

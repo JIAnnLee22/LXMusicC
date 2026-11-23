@@ -252,6 +252,14 @@ void search_page(int delta) {
     if(page>=0 && page*SEARCH_PAGE_SIZE<search.view.total) { search.view.page=page; publish(); }
     pthread_mutex_unlock(&search.lock);
 }
+int search_media(SearchItem *items,int offset,int limit,unsigned *revision) {
+    pthread_mutex_lock(&search.lock);
+    int total=search.view.total;
+    if(*revision && *revision!=search.view.revision) total=-1;
+    *revision=search.view.revision;
+    for(int i=0;i<limit && offset+i<total;++i) items[i]=search.results[offset+i];
+    pthread_mutex_unlock(&search.lock); return total;
+}
 bool search_view(SearchView *view) {
     pthread_mutex_lock(&search.lock);
     bool changed=view->revision!=search.view.revision;

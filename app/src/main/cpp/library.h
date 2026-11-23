@@ -25,5 +25,9 @@ unsigned library_browse(int list,int page,const char *query);
 bool library_view(LibraryView *view);
 bool library_command(int action,uint32_t list,uint32_t track,const SearchItem *item,const char *name);
 bool library_record(const SearchItem *item);
+bool library_valid_item(const SearchItem *item);
+/* 后台媒体调用；返回总条数或-1，输出数组容量为limit（0..240）。 */
+int library_media(int list,LibraryTrack *tracks,LibraryList *lists,int offset,int limit);
+unsigned library_revision(void);
 void library_paste(const char *text,size_t length,const char *error);
 #endif
