@@ -48,3 +48,20 @@ fc92a51 feat(pi-loop): 受阻条目自动跳过、停止标记与汇总里的受
 ```
 
 </details>
+
+## v1.1.0（正式版）
+
+已完成：14 / 14 个功能集
+
+<details><summary>提交</summary>
+
+```
+872de63 14-release-1.1: 升级1.1.0并完善发布说明与Release链路验收
+efbd7bc 13-app-ux: 补齐预测返回与常规交互并修复界面实例交接
+210be7f 12-media-services: 暴露系统媒体库控制并恢复播放队列
+e06c7b8 11-system-ime: 系统键盘输入（IME 桥接）（自动提交）
+2c27bcb 11-system-ime: 接入系统键盘与原生文本编辑
+bd276a2 plan: 加入系统键盘(IME)、系统媒体服务、常规 App 体验与 1.1.0 发布四个功能集
+```
+
+</details>
