@@ -21,9 +21,10 @@ static void label(Renderer *r,float x,float y,float w,float size,Color c,const c
     render_text(r,x,y,size,c,line);
 }
 static void button(Ui *u,Renderer *r,Rect b,const char *s,int action,int value) {
-    render_rect(r,b,12,TINT);
+    bool active=action==LIBUI_FILTER && u->state.library_filter==value;
+    render_rect(r,b,12,active?ACCENT:TINT);
     float width=render_text_width(s,13),size=width>b.w-12?13*(b.w-12)/width:13;
-    render_text(r,b.x+(b.w-render_text_width(s,size))/2,b.y+b.h/2+size*.34f,size,ACCENT,s); hit(u,b,action,value);
+    render_text(r,b.x+(b.w-render_text_width(s,size))/2,b.y+b.h/2+size*.34f,size,active?CARD:ACCENT,s); hit(u,b,action,value);
 }
 static void notice(Ui *u,const char *s,double now) {
     snprintf(u->toast,sizeof(u->toast),"%s",s); u->toast_until=now+2.6;
@@ -74,6 +75,7 @@ float ui_library_draw(Ui *u,Renderer *r,float x,float y,float w) {
             render_rect(r,(Rect){x+12,y+28,w*.6f,6},3,TINT);
             render_rect(r,(Rect){x+12,y+46,w*.35f,4},2,TINT); y+=64;
         }
+        button(u,r,(Rect){x,y,w,36},"重试加载列表",LIBUI_REFRESH,0); y+=48;
         return y+12-start;
     }
     char summary[100]; snprintf(summary,sizeof(summary),"%d 项 · 第 %d / %d 页",v->total,v->page+1,v->total?(v->total+5)/6:1);
@@ -94,12 +96,15 @@ float ui_library_draw(Ui *u,Renderer *r,float x,float y,float w) {
             label(r,x+14,y+53,w-28,12,ACCENT,summary); y+=82;
         } else {
             LibraryTrack *t=&v->songs[i]; Rect card={x,y,w,84};
-            render_rect(r,card,14,CARD); hit(u,card,LIBUI_PLAY,(int)t->id);
+            render_rect(r,card,14,ui_current_song(u,&t->item)?TINT:CARD); hit(u,card,LIBUI_PLAY,(int)t->id);
             label(r,x+12,y+26,w-24,17,TEXT,t->item.song.name);
             label(r,x+12,y+50,w-24,13,MUTED,t->item.song.artist);
             label(r,x+12,y+72,w-24,11,ACCENT,t->item.source_name); y+=92;
             button(u,r,(Rect){x,y,w,32},u->library_confirm_action==LIBUI_REMOVE && u->library_confirm==t->id?"确认移除":"从此列表移除",LIBUI_REMOVE,(int)t->id); y+=44;
         }
+    }
+    if((v->page+1)*LIBRARY_PAGE_SIZE<v->total) {
+        button(u,r,(Rect){x,y,w,40},"加载更多 / 下一页",LIBUI_PAGE,1); y+=52;
     }
     return y-start+12;
 }
@@ -114,6 +119,7 @@ float ui_library_player(Ui *u,Renderer *r,float x,float y,float w) {
 void ui_library_action(Ui *u,int action,int value,double now) {
     if(action!=LIBUI_DELETE && action!=LIBUI_REMOVE) u->library_confirm=0;
     switch(action) {
+        case LIBUI_REFRESH: ui_library_refresh(u); break;
         case LIBUI_FILTER:
             u->state.library_filter=value; u->library_id=value==2?-1:value; u->library_page=0;
             u->library_input=0; u->library_query[0]=0; u->library_adding=false; ui_library_refresh(u); break;

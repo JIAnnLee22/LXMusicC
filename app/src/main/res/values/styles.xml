@@ -1,0 +1,7 @@
+<resources>
+    <color name="startup_background">#090C11</color>
+    <style name="AppTheme" parent="android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/startup</item>
+        <item name="android:colorAccent">#70E0B6</item>
+    </style>
+</resources>

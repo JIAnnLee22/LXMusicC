@@ -77,7 +77,7 @@
   - 验收：`adb shell cmd media_session list-sessions` 能看到会话；锁屏与通知、蓝牙耳机键都能控制；
     用 MediaBrowser 客户端（或 adb 媒体命令）能选曲播放；拔耳机暂停、来电后自动恢复
 
-- [ ] `13-app-ux` 常规音乐 App 的体验补齐
+- [x] `13-app-ux` 常规音乐 App 的体验补齐
   - 预测性返回（`enableOnBackInvokedCallback` + 返回栈）、页面转场、列表惯性滚动与“加载更多”
   - 启动页/骨架屏/空状态/错误重试；通知权限引导，拒绝后有可读说明
   - 键盘与列表滚动联动、横竖屏切换保持播放与滚动位置、播放中切页不中断

@@ -16,7 +16,7 @@ enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SEARCH_RETRY, ACT_SEARCH_PAGE, ACT_SEARCH_SELECT, ACT_SEARCH_KEY, ACT_SEARCH_CLOSE,
     ACT_PLAYBACK, ACT_PLAYBACK_SEEK, ACT_CACHE_OPEN, ACT_CACHE_BACK, ACT_CACHE_DOWNLOAD,
     ACT_CACHE_PAGE, ACT_CACHE_PLAY, ACT_CACHE_DELETE, ACT_CACHE_CLEAR, ACT_CACHE_LIMIT, ACT_CACHE_REFRESH,
-    ACT_PREF_WIFI, ACT_PREF_THEME, ACT_PREF_RETRY, ACT_SOURCE_INPUT, ACT_SOURCE_SUBMIT };
+    ACT_PREF_WIFI, ACT_PREF_THEME, ACT_PREF_RETRY, ACT_SOURCE_INPUT, ACT_SOURCE_SUBMIT, ACT_NOTIFICATIONS };
 static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s);
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
@@ -42,7 +42,7 @@ static void notice(Ui *u,const char *s,double now) {
 
 void ui_init(Ui *u,const UiState *saved) {
     memset(u,0,sizeof(*u)); u->state=(UiState){.version=UI_STATE_VERSION,.search_chip=-1,.settings_row=-1};
-    u->pointer=-1;
+    u->pointer=-1; u->notifications=-1;
     for(int i=0;i<4;++i) u->max_scroll[i]=-1; // Unmeasured: retain restored offsets until first layout.
     if(saved && saved->version==UI_STATE_VERSION && saved->tab>=0 && saved->tab<4) {
         u->state=*saved;
@@ -135,7 +135,7 @@ static float search(Ui *u,Renderer *r,float x,float y,float w) {
     button(u,r,(Rect){x+(w+12)/2,y,(w-12)/2,32},"下一页",ACT_SEARCH_PAGE,1,false); y+=44;
     for(int i=0;i<v->count;++i) {
         SearchItem *item=&v->items[i]; SourceSong *s=&item->song;
-        Rect card={x,y,w,110}; render_rect(r,card,16,CARD); hit(u,card,ACT_SEARCH_SELECT,i);
+        Rect card={x,y,w,110}; render_rect(r,card,16,ui_current_song(u,item)?TINT:CARD); hit(u,card,ACT_SEARCH_SELECT,i);
         fitted(r,x+14,y+27,w-28,17,TEXT,s->name);
         fitted(r,x+14,y+51,w-28,13,MUTED,s->artist);
         char details[180]; int duration=(int)s->duration;
@@ -143,6 +143,9 @@ static float search(Ui *u,Renderer *r,float x,float y,float w) {
         fitted(r,x+14,y+75,w-28,12,ACCENT,details);
         fitted(r,x+14,y+96,w-28,11,MUTED,item->source_name); y+=120;
     }
+    if((v->page+1)*SEARCH_PAGE_SIZE<v->total) {
+        button(u,r,(Rect){x,y,w,40},"加载更多 / 下一页",ACT_SEARCH_PAGE,1,false); y+=52;
+    } else { y=wrapped(r,x,y,w,12,MUTED,v->busy?"其余音源仍在查询，可稍后重试":"已显示当前结果末页，可修改关键词继续搜索"); }
     return y-start+10;
 }
 
@@ -152,7 +155,7 @@ static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,
 }
 static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     float start=y;
-    button(u,r,(Rect){x,y,88,36},"返回设置",ACT_SOURCE_BACK,0,false);
+    button(u,r,(Rect){x,y,88,36},"返回",ACT_SOURCE_BACK,0,false);
     button(u,r,(Rect){x+100,y,w-100,36},u->sources.busy?"处理中…":"粘贴导入",ACT_SOURCE_PASTE,0,!u->sources.busy);
     y+=50;
     Rect address={x,y,w-82,44};
@@ -171,7 +174,7 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     int pages=(u->sources.count+page_size-1)/page_size;
     if(u->source_page>=pages) u->source_page=pages-1;
     char page[64]; snprintf(page,sizeof(page),"音源 %d 个  /  第 %d / %d 页",u->sources.count,u->source_page+1,pages);
-    text(r,x,y+16,14,TEXT,page); y+=32;
+    fitted(r,x,y+16,w,14,TEXT,page); y+=32;
     if(pages>1) {
         button(u,r,(Rect){x,y,(w-12)/2,34},"上一页",ACT_SOURCE_PAGE,-1,false);
         button(u,r,(Rect){x+(w+12)/2,y,(w-12)/2,34},"下一页",ACT_SOURCE_PAGE,1,false); y+=46;
@@ -195,6 +198,9 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
         button(u,r,(Rect){x,y,w,36},"搜索自检（love）",ACT_SOURCE_CHECK,(int)m->id,false);
         y+=58;
     }
+    if(u->source_page+1<pages) {
+        button(u,r,(Rect){x,y,w,40},"加载更多 / 下一页",ACT_SOURCE_PAGE,1,false); y+=52;
+    }
     return y-start;
 }
 static float cache_limits(Ui *u,Renderer *r,float x,float y,float w) {
@@ -209,7 +215,7 @@ static float cache_limits(Ui *u,Renderer *r,float x,float y,float w) {
 }
 static float caches(Ui *u,Renderer *r,float x,float y,float w) {
     float start=y; CacheView *v=&u->cache;
-    button(u,r,(Rect){x,y,88,36},"返回设置",ACT_CACHE_BACK,0,false);
+    button(u,r,(Rect){x,y,88,36},"返回",ACT_CACHE_BACK,0,false);
     button(u,r,(Rect){x+100,y,w-100,36},v->busy?"处理中…":"检查文件",ACT_CACHE_REFRESH,0,false); y+=48;
     char stats[128]; snprintf(stats,sizeof(stats),"%d 首 / %.1f MiB / 上限 %llu MiB",v->total,
         (double)v->bytes/CACHE_MIB,(unsigned long long)(v->limit/CACHE_MIB));
@@ -230,7 +236,7 @@ static float caches(Ui *u,Renderer *r,float x,float y,float w) {
     button(u,r,(Rect){x+(w+10)/2,y,(w-10)/2,32},"下一页",ACT_CACHE_PAGE,1,false); y+=44;
     for(int i=0;i<v->count;++i) {
         CacheEntry *e=&v->items[i];
-        Rect card={x,y,w,104}; render_rect(r,card,14,CARD);
+        Rect card={x,y,w,104}; render_rect(r,card,14,ui_current_song(u,&e->item)?TINT:CARD);
         hit(u,card,ACT_CACHE_PLAY,i);
         fitted(r,x+12,y+26,w-24,16,TEXT,e->item.song.name);
         fitted(r,x+12,y+49,w-24,12,MUTED,e->item.song.artist);
@@ -238,6 +244,9 @@ static float caches(Ui *u,Renderer *r,float x,float y,float w) {
         fitted(r,x+12,y+78,w-108,11,ACCENT,stats);
         button(u,r,(Rect){x+w-88,y+62,76,30},u->cache_delete_id==e->id?"确认删除":"删除",ACT_CACHE_DELETE,(int)e->id,false);
         y+=114;
+    }
+    if((v->page+1)*CACHE_PAGE_SIZE<v->total) {
+        button(u,r,(Rect){x,y,w,40},"加载更多 / 下一页",ACT_CACHE_PAGE,1,false); y+=52;
     }
     return y-start+10;
 }
@@ -248,6 +257,11 @@ static float settings(Ui *u,Renderer *r,float x,float y,float w) {
     render_rect(r,(Rect){x,y,w,82},20,TINT);
     text(r,x+18,y+32,20,TEXT,"LX Music C"); text(r,x+18,y+60,13,ACCENT,"1.0.0 / 设置"); y+=96;
     y=wrapped(r,x,y,w,12,ACCENT,u->settings.message); y+=10;
+    y=wrapped(r,x,y,w,13,TEXT,u->notifications==1?"通知已开启":"通知未开启：可按需授权或前往系统设置");
+    y=wrapped(r,x,y+4,w,12,MUTED,u->notifications==2?
+        "已拒绝授权，仍可播放。媒体通知有系统豁免，但系统或渠道设置可能隐藏控制入口；可随时在系统设置修改":
+        "媒体播放不强制要求通知授权；如媒体卡片不显示，请检查系统通知及播放通知渠道设置"); y+=10;
+    button(u,r,(Rect){x,y,w,38},u->notifications==0?"允许通知 / 检查权限":"打开系统通知设置",ACT_NOTIFICATIONS,0,false); y+=50;
     button(u,r,(Rect){x,y,w,32},u->settings.busy?"正在保存…":"重试保存设置",ACT_PREF_RETRY,0,false); y+=44;
     const char *titles[]={"音源管理","缓存管理","仅 Wi-Fi 下载","主题色","后台播放","数据与隐私","关于"};
     const char *themes[]={"深色 / 薄荷绿","深色 / 天空蓝","深色 / 淡紫色"};
@@ -295,6 +309,7 @@ void ui_draw(Ui *u,Renderer *r,double now) {
     }
     float *scroll=&u->state.scroll[u->state.tab];
     render_clip(r,u->body);
+    render_transform(r,u->transition*12+u->back_progress*32,1-u->transition*.3f-u->back_progress*.25f);
     float extent=0,y=b.y-*scroll;
     switch(u->state.tab) {
         case 0: extent=ui_library_draw(u,r,b.x,y,b.w); break;
@@ -304,15 +319,18 @@ void ui_draw(Ui *u,Renderer *r,double now) {
             extent+=ui_library_player(u,r,b.x,y+extent,b.w); break;
         case 3: extent=settings(u,r,b.x,y,b.w); break;
     }
-    u->max_scroll[u->state.tab]=fmaxf(0,extent-b.h);
+    // 异步库列表未到达时不能用短骨架把恢复的滚动位置夹成零。
+    if(u->state.tab!=0 || u->library.request==u->library_request)
+        u->max_scroll[u->state.tab]=fmaxf(0,extent-b.h);
+    ui_pressed_draw(u,r,false);
     // A resized viewport may clamp the old offset on the next requested frame.
-    if(u->max_scroll[u->state.tab]>0) {
+    if(u->max_scroll[u->state.tab]>0 && extent>0) {
         float thumb=fmaxf(22,b.h*b.h/extent);
         float sy=b.y+(*scroll/u->max_scroll[u->state.tab])*(b.h-thumb);
         render_rect(r,(Rect){u->body.x+u->body.w-3,sy,3,thumb},2,LINE);
     }
     ui_ime_menu_draw(u,r);
-    render_unclip(r);
+    render_unclip(r); render_transform(r,0,1);
     float nav_y=a.y+a.h-(u->ime_target?44:68), item_w=a.w/4;
     render_rect(r,(Rect){a.x,nav_y-8,a.w,1},0,LINE);
     for(int i=0;i<4;++i) {
@@ -324,17 +342,23 @@ void ui_draw(Ui *u,Renderer *r,double now) {
         center(r,(Rect){item.x,item.y+(u->ime_target?6:30),item.w,23},12,active?TEXT:MUTED,TABS[i]);
         hit(u,item,ACT_TAB,i);
     }
+    ui_pressed_draw(u,r,true);
     if(u->toast_until<=now) u->toast_until=0;
     if(u->toast_until>now) {
-        float tw=fminf(a.w-32,render_text_width(u->toast,12)+28);
-        Rect t={a.x+(a.w-tw)/2,nav_y-62,tw,44};
-        render_rect(r,t,14,LINE); fitted(r,t.x+12,t.y+27,t.w-24,12,TEXT,u->toast);
+        float tw=fminf(a.w-24,560);
+        // Snackbar 按实际行数扩展，不截掉可恢复错误与权限拒绝原因。
+        float bottom=render_paragraph(r,-10000,0,tw-24,12,TEXT,u->toast);
+        Rect t={a.x+(a.w-tw)/2,nav_y-20-bottom,tw,bottom+16};
+        render_rect(r,t,14,LINE);
+        render_paragraph(r,t.x+12,t.y+8,t.w-24,12,TEXT,u->toast);
     }
     render_flush(r);
 }
 
 bool ui_tick(Ui *u,float dt) {
-    if(u->max_scroll[u->state.tab]<0) return false;
+    bool transition=u->transition>0 && dt>0;
+    if(transition) u->transition=fmaxf(0,u->transition-dt*6);
+    if(u->max_scroll[u->state.tab]<0) return transition;
     float *s=&u->state.scroll[u->state.tab];
     float clamped=clamp(*s,0,u->max_scroll[u->state.tab]);
     bool dirty=clamped!=*s || u->ime_relayout; *s=clamped; u->ime_relayout=false;
@@ -346,10 +370,11 @@ bool ui_tick(Ui *u,float dt) {
         if(prev==*s) u->velocity=0;
         dirty=true;
     }
-    return dirty;
+    return dirty || transition;
 }
 
 void ui_touch(Ui *u,int action,float x,float y,double now) {
+    if(u->back_progress>0) return;
     if(ui_ime_touch(u,action,x,y,now)) return;
     if(ui_player_touch(u,action,x,y,now)) return;
     if(action==0) {
@@ -360,9 +385,11 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
     if(action==2) {
         if(hypotf(x-u->down_x,y-u->down_y)>8) u->dragging=true;
         if(u->dragging && inside(u->body,u->down_x,u->down_y)) {
+            // 拖动列表即结束编辑，避免输入框自动避让与手指滚动互相争抢。
+            u->ime_target=0; u->input_open=false; u->ime_menu=false;
             float delta=u->last_y-y;
             float dt=(float)(now-u->last_time);
-            u->state.scroll[u->state.tab]=clamp(u->state.scroll[u->state.tab]+delta,0,u->max_scroll[u->state.tab]);
+            u->state.scroll[u->state.tab]=clamp(u->state.scroll[u->state.tab]+delta,0,fmaxf(0,u->max_scroll[u->state.tab]));
             if(dt>.001f) u->velocity=clamp(delta/dt,-2200,2200);
         }
         u->last_y=y; u->last_time=now; return;
@@ -375,10 +402,14 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
            inside(u->body,u->down_x,u->down_y) &&
            ((!u->queue_open && dy<0 && inside(u->art_rect,u->down_x,u->down_y)) ||
             (u->queue_open && dy>0 && u->down_y<u->body.y+80)))
-            ui_player_action(u,PLAYER_TOGGLE_QUEUE,0);
+        {
+            UiRoute previous=ui_route(u);
+            ui_player_action(u,PLAYER_TOGGLE_QUEUE,0); ui_route_record(u,previous);
+        }
         if(now-u->last_time>.12) u->velocity=0;
         return;
     }
+    UiRoute previous=ui_route(u);
     for(int i=u->hit_count-1;i>=0;--i) {
         UiHit h=u->hits[i];
         if(!inside(h.rect,x,y) || !inside(h.rect,u->down_x,u->down_y)) continue;
@@ -394,6 +425,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
             case ACT_FILTER: u->state.library_filter=h.value; break;
             case ACT_CHIP: u->state.search_chip=u->state.search_chip==h.value?-1:h.value; break;
             case ACT_SETTING: u->state.settings_row=u->state.settings_row==h.value?-1:h.value; break;
+            case ACT_NOTIFICATIONS: u->system_action=u->notifications==0?1:2; break;
             case ACT_PREF_WIFI: case ACT_PREF_THEME: case ACT_PREF_RETRY:
                 if(!settings_command(h.action==ACT_PREF_WIFI?SETTINGS_WIFI:h.action==ACT_PREF_THEME?SETTINGS_THEME:SETTINGS_RETRY,
                     h.action==ACT_PREF_WIFI?!u->settings.wifi_only:h.value)) notice(u,"设置尚未就绪，请稍后重试",now);
@@ -424,7 +456,10 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
                 break;
             case ACT_CACHE_OPEN:
                 u->state.tab=3; u->source_open=false; u->cache_open=true; u->state.scroll[3]=0; u->velocity=0; break;
-            case ACT_CACHE_BACK: u->cache_open=false; u->state.scroll[3]=0; break;
+            case ACT_CACHE_BACK:
+                if(ui_route_pop(u)) previous=ui_route(u);
+                else { u->cache_open=false; u->state.scroll[3]=0; }
+                break;
             case ACT_CACHE_DOWNLOAD:
                 if(!cache_command(CACHE_DOWNLOAD,&u->playback.current,0,0)) notice(u,"缓存忙碌，请稍后重试",now);
                 break;
@@ -457,7 +492,10 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
                 playback_command(h.value,0); u->playback_requested=true; break;
             case ACT_PLAYBACK_SEEK:
                 playback_command(PLAYBACK_SEEK,u->playback.position+(int64_t)h.value*1000); break;
-            case ACT_SOURCE_BACK: u->source_open=false; u->state.scroll[3]=0; break;
+            case ACT_SOURCE_BACK:
+                if(ui_route_pop(u)) previous=ui_route(u);
+                else { u->source_open=false; u->state.scroll[3]=0; }
+                break;
             case ACT_SOURCE_PASTE: if(!u->sources.busy) u->paste_requested=true; break;
             case ACT_SOURCE_PAGE:
                 u->source_page=(int)clamp(u->source_page+h.value,0,fmaxf(0,(u->sources.count-1)/3));
@@ -473,12 +511,21 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
         }
         break;
     }
+    ui_route_record(u,previous);
 }
 
 bool ui_back(Ui *u) {
     ui_cancel(u);
     if(u->ime_target) { u->ime_target=0; u->input_open=false; return true; }
-    if(u->toast_until>0) { u->toast_until=0; return true; }
+    u->toast_until=0; u->back_progress=0;
+    if(u->delete_id || u->cache_delete_id || u->cache_clear_confirm || u->library_confirm) {
+        u->delete_id=u->cache_delete_id=u->library_confirm=0; u->cache_clear_confirm=false; return true;
+    }
+    if(u->state.tab==0 && (u->library_input || u->library_adding)) return ui_library_back(u);
+    if(u->state.tab==3 && !u->source_open && !u->cache_open && u->state.settings_row>=0) {
+        u->state.settings_row=-1; return true;
+    }
+    if(ui_route_pop(u)) return true;
     if(u->state.tab==2 && u->queue_open) {
         ui_player_action(u,PLAYER_TOGGLE_QUEUE,0); return true;
     }
@@ -490,6 +537,6 @@ bool ui_back(Ui *u) {
     }
     if(u->state.tab==3 && u->source_open) { u->source_open=false; u->state.scroll[3]=0; return true; }
     if(u->state.tab==3 && u->state.settings_row>=0) { u->state.settings_row=-1; return true; }
-    if(u->state.tab!=0) { u->state.tab=0; return true; }
+    if(u->state.tab!=0) { u->state.tab=0; u->transition=1; return true; }
     return false;
 }

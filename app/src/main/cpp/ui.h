@@ -14,8 +14,18 @@ typedef struct {
     float scroll[4];
 } UiState;
 typedef struct { Rect rect; int action, value; } UiHit;
+/* 有界返回历史只保留路由与滚动，不复制歌曲或持有工作线程引用。 */
+typedef struct {
+    int tab, library_filter, library_id, library_page, source_page, queue_page;
+    bool source_open, cache_open, queue_open;
+    float scroll;
+    char library_query[256];
+} UiRoute;
 typedef struct {
     UiState state;
+    UiRoute history[16];
+    int history_count, notifications, system_action;
+    float transition, back_progress;
     Rect area, body;
     float max_scroll[4], velocity, down_x, down_y, last_y;
     double last_time, toast_until;
@@ -69,6 +79,12 @@ bool ui_tick(Ui *ui, float dt);
 void ui_touch(Ui *ui, int action, float x, float y, double now);
 bool ui_back(Ui *ui);
 void ui_cancel(Ui *ui);
+UiRoute ui_route(const Ui *ui);
+void ui_route_record(Ui *ui,UiRoute previous);
+bool ui_route_pop(Ui *ui);
+bool ui_can_back(const Ui *ui);
+void ui_pressed_draw(Ui *ui,Renderer *r,bool navigation);
+bool ui_current_song(const Ui *ui,const SearchItem *item);
 /* 提交保留在 C：13=搜索/保存；系统 IME 负责普通文本编辑。 */
 bool ui_search_key(Ui *ui,int character,double now);
 void ui_search_sync(Ui *ui);

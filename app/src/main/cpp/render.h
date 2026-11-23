@@ -16,7 +16,7 @@ typedef struct {
     GLuint program, vao, vbo, atlas, cover;
     int cover_width, cover_height;
     GLint resolution;
-    float width, height, scale;
+    float width, height, scale, offset_x, opacity;
     int pixel_w, pixel_h, count;
     Rect clip; // CPU 剔除视口外图元，长页滚动不向 GPU 上传不可见内容。
     Vertex vertices[RENDER_QUADS * 6];
@@ -27,6 +27,8 @@ bool render_create(Renderer *r, const unsigned char *atlas);
 void render_destroy(Renderer *r);
 void render_begin(Renderer *r, int width, int height, float scale);
 void render_flush(Renderer *r);
+/* 仅影响绘制，不改变逻辑布局；页面淡入/预测返回预览。 */
+void render_transform(Renderer *r,float offset_x,float opacity);
 void render_clip(Renderer *r, Rect rect);
 void render_unclip(Renderer *r);
 void render_rect(Renderer *r, Rect rect, float radius, Color color);

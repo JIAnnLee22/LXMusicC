@@ -12,6 +12,7 @@ import java.net.URI
 class SourceActivity : NativeActivity() {
     @Volatile private var closing = false
     private var ime: ImeBridge? = null
+    private var system: SystemBridge? = null
     private external fun nativePaste(data: ByteArray?, error: String?, search: Boolean)
     private external fun nativeSearchCancelled(token: Long): Boolean
     private external fun nativeCoverCancelled(token: Long): Boolean
@@ -26,6 +27,7 @@ class SourceActivity : NativeActivity() {
             android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
             else android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         ime = ImeBridge(this)
+        system = SystemBridge(this).also { it.publish() }
         if (intent?.action == "jiannlee22.lxmusicc.OPEN_PLAYER") nativeOpenPlayer()
     }
 
@@ -50,6 +52,34 @@ class SourceActivity : NativeActivity() {
         return true
     }
 
+    fun requestSystem(action: Int, value: Int): Boolean {
+        if (closing || action !in 0..2) return false
+        runOnUiThread {
+            if (!closing && !isFinishing && !isDestroyed) system?.request(action, value)
+        }
+        return true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        system?.publish()
+    }
+
+    override fun onConfigurationChanged(config: android.content.res.Configuration) {
+        super.onConfigurationChanged(config)
+        system?.publish()
+    }
+
+    // API33+ 已显式注册系统 OnBackInvoked/AnimationCallback；这里只是旧系统/硬件后备。
+    @android.annotation.SuppressLint("GestureBackNavigation")
+    @Deprecated("Legacy back dispatch")
+    override fun onBackPressed() { system?.legacyBack() }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        system?.permissionResult(requestCode, grantResults)
+    }
+
     override fun onPause() {
         ime?.hide(true)
         super.onPause()
@@ -57,6 +87,8 @@ class SourceActivity : NativeActivity() {
 
     override fun onDestroy() {
         closing = true
+        system?.close()
+        system = null
         ime?.close()
         ime = null
         super.onDestroy()

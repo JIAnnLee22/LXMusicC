@@ -80,6 +80,7 @@ void render_destroy(Renderer *r) {
 void render_begin(Renderer *r, int width, int height, float scale) {
     r->width = width/scale; r->height = height/scale; r->scale = scale;
     r->pixel_w = width; r->pixel_h = height; r->count = 0;
+    r->offset_x=0; r->opacity=1;
     r->clip=(Rect){0,0,r->width,r->height};
     glViewport(0,0,width,height); glDisable(GL_SCISSOR_TEST);
     glClearColor(0.035f,0.047f,0.065f,1); glClear(GL_COLOR_BUFFER_BIT);
@@ -96,6 +97,9 @@ void render_flush(Renderer *r) {
     glDrawArrays(GL_TRIANGLES,0,r->count); r->count = 0;
 }
 
+void render_transform(Renderer *r,float offset_x,float opacity) {
+    r->offset_x=offset_x; r->opacity=opacity;
+}
 void render_clip(Renderer *r, Rect rect) {
     render_flush(r); r->clip=rect; glEnable(GL_SCISSOR_TEST);
     int x = (int)ceilf(fmaxf(0,rect.x*r->scale));
@@ -109,6 +113,7 @@ void render_unclip(Renderer *r) {
 }
 
 static void quad(Renderer *r, Rect b, Rect uv, float radius, Color c, float mode) {
+    b.x+=r->offset_x; c.a*=r->opacity;
     Rect cull=r->clip;
     if (b.w <= 0 || b.h <= 0 || b.x>=cull.x+cull.w || b.x+b.w<=cull.x ||
         b.y>=cull.y+cull.h || b.y+b.h<=cull.y) return;

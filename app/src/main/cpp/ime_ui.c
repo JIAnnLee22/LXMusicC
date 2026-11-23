@@ -184,6 +184,11 @@ bool ui_ime_touch(Ui *u,int action,float x,float y,double now) {
     }
     if(!u->ime_gesture) return false;
     if(u->ime_down_time>=0) {
+        // 纵向拖动输入区也能收键盘并滚列表；横向仍是选区编辑。
+        if(action==2 && fabsf(y-u->down_y)>8 && fabsf(y-u->down_y)>fabsf(x-u->down_x)) {
+            u->ime_gesture=false; u->pressed=true; u->dragging=false;
+            u->last_y=u->down_y; u->last_time=u->ime_down_time; return false;
+        }
         if(action==2 && fabsf(x-u->down_x)>8) u->ime_selecting=true;
         if(action==1 || u->ime_selecting) {
             u->ime_start=u->ime_anchor; u->ime_end=offset_at(u,x); u->ime_selection_dirty=true;

@@ -9,6 +9,7 @@
 #include "library_ui.h"
 #include "ime_ui.h"
 #include "ime_bridge.h"
+#include "ux_bridge.h"
 #include "playback_store.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
@@ -42,7 +43,8 @@ typedef struct {
     CoverImage cover;
     char cover_url[2048];
     double retry_at;
-    float scale;
+    float scale, font_scale;
+    int back_enabled;
     int insets[4];
     bool insets_dirty;
 } Engine;
@@ -126,7 +128,8 @@ static bool draw(Engine *e,double now) {
     if(w<=0 || h<=0) return true;
     int density=AConfiguration_getDensity(e->app->config);
     if(density<=0 || density>=ACONFIGURATION_DENSITY_ANY) density=160;
-    e->scale=density/160.f;
+    // 字体与控件统一缩放：现有行距、光标、触摸坐标保持同一逻辑单位，避免仅放大字形导致裁切。
+    e->scale=density/160.f*e->font_scale;
     ARect c=e->app->contentRect;
     // contentRect may span system navigation on edge-to-edge Android; intersect, do not add.
     if(e->insets_dirty) e->insets_dirty=!platform_insets(e->app->activity,e->insets);
@@ -214,24 +217,46 @@ static int32_t on_input(struct android_app *app,AInputEvent *event) {
     e->dirty=true; return 1;
 }
 
+static pthread_mutex_t engine_owner=PTHREAD_MUTEX_INITIALIZER;
+static void waiting_cmd(struct android_app *app,int32_t cmd) {
+    bool *focused=app->userData;
+    if(cmd==APP_CMD_GAINED_FOCUS) *focused=true;
+    if(cmd==APP_CMD_LOST_FOCUS) *focused=false;
+}
+
 void android_main(struct android_app *app) {
+    // 系统可先 create 新 Activity 再 destroy 旧实例（通知/任务重建）。全局 worker 必须串行交接。
+    // 等待者仍处理 glue 命令以应答 START/RESUME/窗口回调，不能直接阻塞 Android 主线程。
+    bool focused=false; app->userData=&focused; app->onAppCmd=waiting_cmd;
+    while(pthread_mutex_trylock(&engine_owner)!=0) {
+        int events; struct android_poll_source *source=NULL;
+        int result=ALooper_pollOnce(100,NULL,&events,(void **)&source);
+        if(result>=0 && source) source->process(app,source);
+        if(app->destroyRequested || result==ALOOPER_POLL_ERROR) return;
+    }
     // Large vertex staging array stays off the NativeActivity thread's small stack.
     static Engine e;
-    memset(&e,0,sizeof(e)); e.app=app; e.scale=1;
+    memset(&e,0,sizeof(e)); e.app=app; e.scale=e.font_scale=1; e.back_enabled=-1;
     e.display=EGL_NO_DISPLAY; e.surface=EGL_NO_SURFACE; e.context=EGL_NO_CONTEXT;
     UiState saved,*restore=NULL;
     if(app->savedState && app->savedStateSize==sizeof(saved)) { memcpy(&saved,app->savedState,sizeof(saved)); restore=&saved; }
     ui_init(&e.ui,restore); atomic_init(&e.font_status,0);
+    e.focused=focused; e.resumed=app->activityState==APP_CMD_RESUME;
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
-    if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
+    if(pthread_create(&e.loader,NULL,load_font,&e)!=0) {
+        LOGE("font worker failed"); ANativeActivity_finish(app->activity);
+        pthread_mutex_unlock(&engine_owner); return;
+    }
     ime_bridge_start(app->looper);
+    ux_bridge_start(app->looper);
     playback_ui(app->looper);
     if(!playback_store_start(app->activity->internalDataPath)) LOGE("playback snapshot worker failed");
     if(!library_start(app->activity->internalDataPath,app->looper)) {
         snprintf(e.ui.library.message,256,"音乐库启动失败，请退出后重试");
         LOGE("library worker failed");
     }
-    ui_library_refresh(&e.ui);
+    float library_scroll=e.ui.state.scroll[0];
+    ui_library_refresh(&e.ui); e.ui.state.scroll[0]=library_scroll;
     playback_view(&e.ui.playback); ui_player_sync(&e.ui);
     bool settings_started=settings_start(app->activity->internalDataPath,source_wake,app->activity);
     bool cover_started=cover_start(app->activity->internalDataPath,source_wake,app->activity);
@@ -246,16 +271,36 @@ void android_main(struct android_app *app) {
         bool visible=app->window && e.resumed;
         double now=seconds();
         if(visible && status==1 && !e.ready && now>=e.retry_at) engine_create(&e);
-        bool animate=visible && e.focused && ((!e.ui.pressed && fabsf(e.ui.velocity)>3) || e.ui.toast_until>0 || ui_player_animating(&e.ui));
+        bool animate=visible && e.focused && ((!e.ui.pressed && fabsf(e.ui.velocity)>3) || e.ui.toast_until>0 || e.ui.transition>0 || ui_player_animating(&e.ui));
         int timeout=visible && e.ready && (e.dirty||animate)?0:visible && !e.ready?100:-1;
         int events; struct android_poll_source *source=NULL;
         int result=ALooper_pollOnce(timeout,NULL,&events,(void **)&source);
         if(result==ALOOPER_POLL_ERROR) { LOGE("looper failed"); break; }
         if(result>=0 && source) source->process(app,source);
         if(app->destroyRequested) break;
-        if(playback_take_open()) {
+        UxEvent system=ux_bridge_take();
+        if(system.changed) {
+            e.font_scale=system.font_scale; e.ui.back_progress=system.back_progress;
+            if(e.ui.notifications!=system.notifications && system.notifications==2) {
+                snprintf(e.ui.toast,sizeof(e.ui.toast),"通知授权被拒绝，仍可播放；可到设置中开启");
+                e.ui.toast_until=seconds()+4;
+            }
+            if(system.notifications==3) {
+                snprintf(e.ui.toast,sizeof(e.ui.toast),"系统授权或设置暂不可用，请稍后重试");
+                e.ui.toast_until=seconds()+4;
+            } else e.ui.notifications=system.notifications;
+            e.dirty=true;
+        }
+        if(system.back) {
+            if(!ui_back(&e.ui)) ANativeActivity_finish(app->activity);
+            e.dirty=true;
+        }
+        if(e.resumed && playback_take_open()) {
+            UiRoute previous_route=ui_route(&e.ui);
             ui_cancel(&e.ui); e.ui.ime_target=0; e.ui.input_open=false;
-            e.ui.state.tab=2; e.ui.state.scroll[2]=0; e.ui.velocity=0; e.dirty=true;
+            e.ui.state.tab=2; e.ui.state.scroll[2]=0; e.ui.velocity=0;
+            e.ui.queue_open=false; e.ui.queue_mix=0;
+            ui_route_record(&e.ui,previous_route); e.dirty=true;
         }
         if(playback_view(&e.ui.playback)) { ui_player_sync(&e.ui); e.dirty=true; }
         const char *cover_url=e.ui.playback.count?e.ui.playback.current.song.cover:"";
@@ -284,6 +329,15 @@ void android_main(struct android_app *app) {
         if(e.ui.search_paste_requested) { e.ui.search_paste_requested=false; source_bridge_paste(app->activity,1); }
         if(e.ui.library_paste_requested) { e.ui.library_paste_requested=false; source_bridge_paste(app->activity,2); }
         if(ui_ime_sync(&e.ui,app->activity,seconds())) e.dirty=true;
+        int back=ui_can_back(&e.ui);
+        if(back!=e.back_enabled && ux_bridge_request(app->activity,0,back)) e.back_enabled=back;
+        if(e.ui.system_action) {
+            if(!ux_bridge_request(app->activity,e.ui.system_action,0)) {
+                snprintf(e.ui.toast,sizeof(e.ui.toast),"系统设置暂不可用，请稍后重试");
+                e.ui.toast_until=seconds()+4;
+            }
+            e.ui.system_action=0;
+        }
         now=seconds(); float dt=(float)fmin(now-previous,.05); previous=now;
         if(app->window && e.ready && e.resumed) {
             bool moved=ui_tick(&e.ui,dt);
@@ -294,6 +348,7 @@ void android_main(struct android_app *app) {
     }
     ime_bridge_request(app->activity,0,0,"",0,0,0);
     ime_bridge_stop();
+    ux_bridge_stop();
     library_ui(NULL); // 库线程为进程级，继续处理后台实际播放的历史记录。
     playback_ui(NULL); // 只解除 UI 订阅，进程级队列与前台服务继续播放。
     source_bridge_cancel(app->activity);
@@ -305,4 +360,5 @@ void android_main(struct android_app *app) {
     if(sources_started) source_stop();
     engine_destroy(&e); pthread_join(e.loader,NULL); free(e.atlas);
     LOGI("native activity finished");
+    pthread_mutex_unlock(&engine_owner);
 }

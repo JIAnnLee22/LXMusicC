@@ -46,7 +46,10 @@ static float queue_draw(Ui *u,Renderer *r,float x,float y,float w) {
         label(r,x+50,y+28,w-64,16,current?ACCENT:TEXT,q.items[i].song.name);
         label(r,x+50,y+52,w-64,12,MUTED,q.items[i].song.artist); y+=80;
     }
-    if(!q.total) { render_text(r,x+12,y+32,15,MUTED,"暂无播放队列，请先搜索选曲"); y+=60; }
+    if((q.page+1)*PLAYBACK_QUEUE_PAGE<q.total) {
+        button(u,r,(Rect){x,y,w,40},"加载更多 / 下一页",PLAYER_QUEUE_PAGE,1,false); y+=52;
+    }
+    if(!q.total) y=render_paragraph(r,x+12,y+12,w-24,15,MUTED,"暂无播放队列，请先搜索选曲")+12;
     return y-start+12;
 }
 float ui_player_draw(Ui *u,Renderer *r,float x,float y,float w) {

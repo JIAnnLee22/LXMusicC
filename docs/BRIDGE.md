@@ -17,6 +17,8 @@ C 入口：`bool platform_insets(ANativeActivity *activity, int insets[4])`，�
 
 每次类/方法查找和调用都检查异常，异常清除并记录 `LXMusicC` 日志；对象返回值检查 null，整数返回值检查非负。局部引用限定在 `PushLocalFrame/PopLocalFrame` 内，帧分配失败也清除异常。系统栏使用 API 23 的兼容查询（API 30 起废弃但仍可用）；若后续 Android 改变兼容行为，应替换为 `getInsets(Type.systemBars() | Type.displayCutout())`。
 
+13阶段新增的系统返回、配置与通知权限桥见文末；字体与控件在C使用统一逻辑坐标缩放。
+
 其余生命周期操作使用 NDK API：`ANativeActivity_finish` 关闭 Activity；`APP_CMD_SAVE_STATE` 由 native_app_glue 管理临时界面状态。
 
 ## 音源输入和下载（02-lx-source-import）
@@ -83,7 +85,7 @@ C 的 `playback_bridge_start/apply` 检查 attach/GetObjectClass/GetMethodID/Glo
 
 播放快照/队列用独立 playback.lock；进度回调只有内容变化才发布。UI 订阅的 ALooper 在锁内 acquire/release，Activity 暂停或退出解除订阅，不让息屏回调唤醒 GL 线程；恢复重新订阅并读取最新快照。服务不持有 Activity，Activity 的 closing、HTTP 取消和 source/search_stop 均不停止播放。12 阶段增加后台队列持久化及暂停恢复，详见下文；仍不从后台擅自发声。
 
-Media3 负责系统音频焦点与 noisy（拔耳机）处理；瞬态焦点丢失暂停、恢复后继续，永久丢失后手动播放。前台提升失败由 MediaSessionService.Listener 转为暂停和可读错误。媒体会话通知豁免 Android 13 POST_NOTIFICATIONS 运行时授权，因此不请求无关通知权限；服务声明 mediaPlayback 类型及对应前台权限、WAKE_LOCK。12 阶段允许以媒体库 ID 选曲或按系统时间线选曲；不允许注入外部 URL 或任意编辑 C 队列。
+Media3 负责系统音频焦点与 noisy（拔耳机）处理；瞬态焦点丢失暂停、恢复后继续，永久丢失后手动播放。前台提升失败由 MediaSessionService.Listener 转为暂停和可读错误。媒体会话通知豁免 Android 13 POST_NOTIFICATIONS 运行时授权；13阶段另提供用户主动的授权/通知设置入口与拒绝说明，不把授权作为播放条件；服务声明 mediaPlayback 类型及对应前台权限、WAKE_LOCK。12 阶段允许以媒体库 ID 选曲或按系统时间线选曲；不允许注入外部 URL 或任意编辑 C 队列。
 
 ## 公共目录缓存（06-cache）
 
@@ -172,4 +174,19 @@ HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 
 - MediaController支持play/pause/stop/next/previous/seekTo/seekTo(index,position)，以及 `setMediaItem(MediaItem.Builder().setMediaId(id).build())` → prepare/play。一次选一个媒体库ID，由C生成其所在列表的最多240首窗口；客户端不能add/remove/move、传入自定义队列、设置随机/循环/倍速（模式仍在C页面管理）。平台控制器也可使用playFromMediaId/skipToQueueItem。
 - onSetMediaItems在executor完成C选曲、先投递applyQueue，再完成Future；Media3在同一主线程随后处理setMediaItems，wrapper此时不重复修改输出，prepare/play回C执行。系统时间线是完整C队列镜像，不再是单曲；ExoPlayer pauseAtEndOfMediaItems阻止自行跳歌，结束事件按generation去重后由C决定下一首/循环/随机。
 - Media3继续负责焦点、瞬态失焦恢复、音乐ducking、noisy暂停与系统路由；不重复申请焦点。ducking仅改变系统播放器音量乘子，不是用户暂停、不另设C业务状态。
-- SessionActivity的PendingIntent使用 `jiannlee22.lxmusicc.OPEN_PLAYER`、SINGLE_TOP/CLEAR_TOP；Activity为singleTask，冷/热唤醒均进入正在播放，避免并发创建两个持有静态C引擎的NativeActivity。不增加可见Kotlin UI。
+- SessionActivity的PendingIntent使用 `jiannlee22.lxmusicc.OPEN_PLAYER`、SINGLE_TOP/CLEAR_TOP；Activity为singleTask，冷/热唤醒均进入正在播放。不增加可见Kotlin UI；13阶段进一步串行交接新旧NativeActivity的引擎，处理系统先create再destroy的重叠生命周期。
+
+## 常规体验系统适配（13-app-ux）
+
+实现：`ux_bridge.[ch]` ↔ `SourceActivity.requestSystem` / `SystemBridge.kt`。Android主线程仅处理返回回调注册、Configuration字体倍率、通知权限/设置；路由、历史、预览绘制、分页和提示文案全部在C。
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| C → SourceActivity | `requestSystem` | `(II)Z` | NativeActivity/GL调用，投递Android主线程 | action=0更新内部返回拦截（value=0/1）、1用户主动请求通知授权、2打开系统通知设置。true仅表示已投递，false/异常失败；1/2忽略value |
+| SystemBridge → C | `nativeSystem` | `(FI)V` | Android主线程，create/resume/configuration/权限结果 | fontScale有限且0.5..5；notifications=0未开启、1全局通知开启、2本实例刚收到拒绝、3系统请求异常。只复制事实并wake，无IO；3保留原通知状态并由C显示错误 |
+| SystemBridge → C | `nativeBack` | `(IF)V` | Android主线程，系统返回/动画/旧版onBackPressed | kind=0提交、1预览、2取消；progress有限且0..1。C邮箱合并预览，提交位sticky；取消/提交归零。只在已有looper时接收，不访问Ui |
+
+- C包装逐项检查GetEnv/Attach、局部帧、类/方法查找、CallBooleanMethod的异常与结果，清异常、记LXMusicC，按需detach。邮箱mutex保护快照和looper acquire/release；GL线程是Ui唯一所有者。初始化前的字体/权限事实保留，关闭后返回事件丢弃；不保留JNI对象。
+- manifest开启`enableOnBackInvokedCallback`。API33注册OnBackInvokedCallback，API34+使用OnBackAnimationCallback并转发进度/取消；PRIORITY_DEFAULT低于IME，系统先处理键盘。仅C判断存在内部返回时注册，根页面解除注册让系统处理退出预览；API26–32沿用键码/onBackPressed后备。SourceActivity对GestureBackNavigation的局部lint抑制仅针对该后备，现代路径不是onBackPressed。
+- 通知授权只在用户点击C设置按钮时请求：API33+缺权限时requestPermissions(POST_NOTIFICATIONS)，已有权限或旧系统直接打开ACTION_APP_NOTIFICATION_SETTINGS。拒绝不影响媒体播放，不自动循环请求；拒绝后按钮进入系统设置，本实例重启后可再次显式尝试。状态只检查全局areNotificationsEnabled，不声称逐渠道已开启；文案提示检查播放渠道。媒体会话通知仍有平台豁免。
+- `fontScale|keyboard`配置变化就地处理；主线程发布resources.configuration.fontScale，C将density×fontScale用于布局、SDF字形、光标、触摸与insets统一转换。长说明换行，标题/元数据按宽度省略，受限按钮按宽适配；不是仅放大字形挤进旧行高。旋转/分屏保持原Ui与播放线程；不增加跨进程界面草稿持久化。
