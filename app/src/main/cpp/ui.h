@@ -53,6 +53,14 @@ typedef struct {
     char query[SEARCH_QUERY_BYTES];
     unsigned paste_revision;
     bool input_open, search_paste_requested;
+    char source_url[2048];
+    int ime_target, ime_active, ime_session, ime_start, ime_end, ime_cs, ime_ce, ime_bottom, ime_reference_height;
+    char ime_mirror[2048];
+    Rect ime_rect;
+    float ime_offset;
+    bool ime_selection_dirty, ime_paste, ime_menu, ime_gesture, ime_selecting, ime_relayout, ime_show;
+    int ime_anchor;
+    double ime_down_time;
 } Ui;
 void ui_init(Ui *ui, const UiState *saved);
 void ui_layout(Ui *ui, Rect area);
@@ -61,7 +69,7 @@ bool ui_tick(Ui *ui, float dt);
 void ui_touch(Ui *ui, int action, float x, float y, double now);
 bool ui_back(Ui *ui);
 void ui_cancel(Ui *ui);
-/* C 软键盘与硬件键盘共用文本编辑；8=删字，13=提交。 */
+/* 提交保留在 C：13=搜索/保存；系统 IME 负责普通文本编辑。 */
 bool ui_search_key(Ui *ui,int character,double now);
 void ui_search_sync(Ui *ui);
 #endif

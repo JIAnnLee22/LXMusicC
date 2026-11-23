@@ -7,6 +7,8 @@
 #include "cover.h"
 #include "player_ui.h"
 #include "library_ui.h"
+#include "ime_ui.h"
+#include "ime_bridge.h"
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/keycodes.h>
@@ -131,7 +133,11 @@ static bool draw(Engine *e,double now) {
     c.left=c.left<e->insets[0]?e->insets[0]:c.left;
     c.top=c.top<e->insets[1]?e->insets[1]:c.top;
     c.right=c.right>w-e->insets[2]?w-e->insets[2]:c.right;
-    c.bottom=c.bottom>h-e->insets[3]?h-e->insets[3]:c.bottom;
+    // 框架已 resize 的窗口不能再次扣除完整 IME 高度（含旧 API/分屏）。
+    int ime=e->ui.ime_bottom;
+    if(e->ui.ime_reference_height>h) ime-=e->ui.ime_reference_height-h;
+    int bottom=ime>e->insets[3]?ime:e->insets[3];
+    c.bottom=c.bottom>h-bottom?h-bottom:c.bottom;
     if(c.right<=c.left || c.bottom<=c.top) {
         // Insets/contentRect may still belong to the previous orientation for one callback.
         c=(ARect){0,0,w,h}; e->insets_dirty=true;
@@ -176,26 +182,13 @@ static void on_cmd(struct android_app *app,int32_t cmd) {
 
 static int32_t on_input(struct android_app *app,AInputEvent *event) {
     Engine *e=app->userData; Ui *u=&e->ui;
+    if(ui_ime_sync(u,app->activity,seconds())) e->dirty=true;
     if(AInputEvent_getType(event)==AINPUT_EVENT_TYPE_KEY) {
         int key=AKeyEvent_getKeyCode(event);
         // 即使搜索软键盘展开，也把硬件音量交还系统媒体流处理。
         if(key==AKEYCODE_VOLUME_UP || key==AKEYCODE_VOLUME_DOWN || key==AKEYCODE_VOLUME_MUTE) return 0;
-        if(key!=AKEYCODE_BACK) {
-            if(!((u->state.tab==1 && u->input_open) || (u->state.tab==0 && u->library_input))) return 0;
-            if(AKeyEvent_getAction(event)!=AKEY_EVENT_ACTION_DOWN) return 1;
-            int ch=0;
-            bool shift=(AKeyEvent_getMetaState(event)&AMETA_SHIFT_ON)!=0;
-            if(key>=AKEYCODE_A && key<=AKEYCODE_Z) ch=(shift?'A':'a')+key-AKEYCODE_A;
-            else if(key>=AKEYCODE_0 && key<=AKEYCODE_9) ch='0'+key-AKEYCODE_0;
-            else if(key==AKEYCODE_SPACE) ch=' ';
-            else if(key==AKEYCODE_DEL) ch=8;
-            else if(key==AKEYCODE_ENTER || key==AKEYCODE_NUMPAD_ENTER) ch=13;
-            else if(key==AKEYCODE_MINUS) ch='-';
-            else if(key==AKEYCODE_APOSTROPHE) ch='\'';
-            else if(key==AKEYCODE_PERIOD) ch='.';
-            if(ch && (ui_library_key(u,ch,seconds()) || ui_search_key(u,ch,seconds()))) e->dirty=true;
-            return 1;
-        }
+        // 系统 EditText/InputConnection 接管软硬键盘，避免重复编辑/提交。
+        if(key!=AKEYCODE_BACK) return 0;
         if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_UP) {
             if(!ui_back(u)) ANativeActivity_finish(app->activity);
             e->dirty=true;
@@ -230,6 +223,7 @@ void android_main(struct android_app *app) {
     ui_init(&e.ui,restore); atomic_init(&e.font_status,0);
     app->userData=&e; app->onAppCmd=on_cmd; app->onInputEvent=on_input;
     if(pthread_create(&e.loader,NULL,load_font,&e)!=0) { LOGE("font worker failed"); ANativeActivity_finish(app->activity); return; }
+    ime_bridge_start(app->looper);
     playback_ui(app->looper);
     if(!library_start(app->activity->internalDataPath,app->looper)) {
         snprintf(e.ui.library.message,256,"音乐库启动失败，请退出后重试");
@@ -246,10 +240,11 @@ void android_main(struct android_app *app) {
     while(!app->destroyRequested) {
         int status=atomic_load_explicit(&e.font_status,memory_order_acquire);
         if(status<0) { LOGE("font asset unavailable"); ANativeActivity_finish(app->activity); }
-        bool visible=app->window && e.resumed && e.focused;
+        // 分屏中未获焦但 resumed 的窗口仍需重画，避免重建 surface 后黑屏。
+        bool visible=app->window && e.resumed;
         double now=seconds();
         if(visible && status==1 && !e.ready && now>=e.retry_at) engine_create(&e);
-        bool animate=visible && ((!e.ui.pressed && fabsf(e.ui.velocity)>3) || e.ui.toast_until>0 || ui_player_animating(&e.ui));
+        bool animate=visible && e.focused && ((!e.ui.pressed && fabsf(e.ui.velocity)>3) || e.ui.toast_until>0 || ui_player_animating(&e.ui));
         int timeout=visible && e.ready && (e.dirty||animate)?0:visible && !e.ready?100:-1;
         int events; struct android_poll_source *source=NULL;
         int result=ALooper_pollOnce(timeout,NULL,&events,(void **)&source);
@@ -282,14 +277,17 @@ void android_main(struct android_app *app) {
         if(e.ui.paste_requested) { e.ui.paste_requested=false; source_bridge_paste(app->activity,false); }
         if(e.ui.search_paste_requested) { e.ui.search_paste_requested=false; source_bridge_paste(app->activity,1); }
         if(e.ui.library_paste_requested) { e.ui.library_paste_requested=false; source_bridge_paste(app->activity,2); }
+        if(ui_ime_sync(&e.ui,app->activity,seconds())) e.dirty=true;
         now=seconds(); float dt=(float)fmin(now-previous,.05); previous=now;
-        if(app->window && e.ready && e.resumed && e.focused) {
+        if(app->window && e.ready && e.resumed) {
             bool moved=ui_tick(&e.ui,dt);
             if(e.dirty||moved||e.ui.toast_until>0) {
                 if(!draw(&e,now)) { LOGE("surface lost: 0x%x",eglGetError()); engine_destroy(&e); e.retry_at=now+1; }
             }
         }
     }
+    ime_bridge_request(app->activity,0,0,"",0,0,0);
+    ime_bridge_stop();
     library_ui(NULL); // 库线程为进程级，继续处理后台实际播放的历史记录。
     playback_ui(NULL); // 只解除 UI 订阅，进程级队列与前台服务继续播放。
     source_bridge_cancel(app->activity);

@@ -8,9 +8,10 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 
-/** 仅系统剪贴板和 HTTP；没有 View、解析或音源业务状态。 */
+/** 系统能力入口；页面、文本显示、解析和业务状态留在 C。 */
 class SourceActivity : NativeActivity() {
     @Volatile private var closing = false
+    private var ime: ImeBridge? = null
     private external fun nativePaste(data: ByteArray?, error: String?, search: Boolean)
     private external fun nativeSearchCancelled(token: Long): Boolean
     private external fun nativeCoverCancelled(token: Long): Boolean
@@ -19,14 +20,35 @@ class SourceActivity : NativeActivity() {
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         volumeControlStream = android.media.AudioManager.STREAM_MUSIC
+        // 新系统手动消费 Type.ime；旧系统让框架提供可见区域/resize 通知。
+        window.setSoftInputMode(if (android.os.Build.VERSION.SDK_INT >= 30)
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+            else android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        ime = ImeBridge(this)
     }
 
     /** 二进制传输仅在 C 封面线程执行；解码和缓存策略留在 C。 */
     fun requestCover(data: ByteArray, token: Long): ByteArray =
         CoverHttp.execute(data) { closing || nativeCoverCancelled(token) }
 
+    /** GL 线程只投递，所有 EditText/IMM 操作在主线程执行。 */
+    fun requestIme(action: Int, session: Int, data: ByteArray, start: Int, end: Int, kind: Int): Boolean {
+        if (closing) return false
+        runOnUiThread {
+            if (!closing && !isFinishing && !isDestroyed) ime?.request(action, session, data, start, end, kind)
+        }
+        return true
+    }
+
+    override fun onPause() {
+        ime?.hide(true)
+        super.onPause()
+    }
+
     override fun onDestroy() {
         closing = true
+        ime?.close()
+        ime = null
         super.onDestroy()
     }
 

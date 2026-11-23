@@ -60,7 +60,7 @@
   - 不要自己打 tag：`pi-loop.sh` 在全部条目完成后会打 `v1.0.0` 并触发 CI 发布
   - 验收：正式 Release 能下载安装包并正常启动
 
-- [ ] `11-system-ime` 系统键盘输入（IME 桥接）
+- [x] `11-system-ime` 系统键盘输入（IME 桥接）
   - Kotlin 最小桥：挂一个 1dp 透明 EditText 作为输入目标，`InputMethodManager.showSoftInput/hideSoftInput`；
     `InputConnection`/`TextWatcher` 把组合中文本（候选词）、提交文本、删除、回车实时回传 C
   - C 侧：搜索框、歌单命名、音源地址输入都改用系统键盘；光标/选区、长按粘贴、中文候选正常工作

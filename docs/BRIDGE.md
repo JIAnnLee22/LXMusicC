@@ -1,6 +1,6 @@
 # JNI 桥接契约
 
-UI 和业务逻辑全部在 C。C 通过 Android 框架 JNI 只读查询安全区；`SourceActivity.kt`（NativeActivity 子类）及其辅助对象仅封装系统剪贴板、HTTP(S)、网络能力和媒体/存储服务，没有 Kotlin UI 或 Java 源码。
+UI 和业务逻辑全部在 C。C 通过 Android 框架 JNI 只读查询安全区；`SourceActivity.kt`（NativeActivity 子类）及其辅助对象仅封装系统剪贴板、HTTP(S)、网络能力和媒体/存储服务，没有可见 Kotlin UI 或 Java 源码；11 阶段仅新增白名单内的 1dp 透明 EditText 输入目标。
 
 ## 系统安全区（01-ui-shell）
 
@@ -60,7 +60,7 @@ HTTP 支持 GET/POST/PUT/DELETE/PATCH/HEAD、请求头和 UTF-8 正文；仅无�
 
 `source_bridge_search_http(context,request,token,error)` 复用原有 attach/local-frame/字节检查路径；额外 jlong 参数对应 Kotlin Long。调用 nativeSearchCancelled 的异常会被 RuntimeHttp 的异常路径转换为错误，C 同样校验返回值；C 调用 Kotlin 方法仍逐次检查 JNI 异常/null/长度/UTF-8。搜索取消只递增 C 代次，不调用会永久关闭桥接的 cancelSourceFetch，不影响导入和自检。Kotlin 在 HTTP 原有的开始、重定向、读写块和响应完成检查点调用取消判断；已阻塞的 DNS、建连、socket 操作仍不能硬中断。即使底层晚返回，C 二次检查代次后丢弃旧结果。
 
-输入框、字母/数字软键盘、UTF-8 退格和硬件按键编辑均为纯 C；中文通过系统剪贴板输入。不新增 Kotlin View、InputConnection 或输入法 UI。Activity 退出先置 closing，再 search_stop（取消/join 全部任务），最后 source_stop，确保所有工作线程退出后才释放 Activity。
+04 阶段输入框、字母/数字软键盘、UTF-8 退格和硬件按键编辑均为纯 C，中文通过系统剪贴板输入；11 阶段已替换为下文的系统 IME 桥，不再绘制两套应用内键盘。Activity 退出先置 closing，再 search_stop（取消/join 全部任务），最后 source_stop，确保所有工作线程退出后才释放 Activity。
 
 **JVM 装载要求**：Kotlin companion 显式 `System.loadLibrary("lxmusicc")`；NativeActivity 自己的 dlopen 不会把库登记到 JVM ClassLoader 的 native 方法查找表，单靠 manifest 的 `android.app.lib_name` 会导致 nativePaste 出现 UnsatisfiedLinkError。AGP 9 使用内置 Kotlin 支持，无新增 Kotlin 插件/第三方运行时 SDK。
 
@@ -130,3 +130,23 @@ HTTP 仅无凭据 HTTP(S)、系统证书校验、最多五次重定向，禁止 
 实现 `cache_bridge.c` → `settings_download_allowed`，`SystemNetwork.flags` 只用系统 `ConnectivityManager.activeNetwork/getNetworkCapabilities` 查询事实（既有 `ACCESS_NETWORK_STATE` 权限），查询异常/无默认网络返回 0。设置文件与业务判断均在 C；Kotlin 不保存主题、开关或业务队列。C 无 JNI 调用、不读数组/对象，因此本回调不需要 attach/异常清除；Kotlin native 调用异常仍由既有 `CacheStorage.execute` 捕获并转换错误字节，外层 C `requestCache` 返回值/异常检查不变。
 
 `requestCache(I[B[B[B[BJ)[B` 签名不变；下载前（创建文件前）、每跳重定向、读写块及响应完成沿用取消检查点，除 closing 外执行网络策略检查。拒绝抛可读错误「下载受设置限制，请等待设置加载或连接非计费 Wi-Fi 后重试」，进入原有 pending/part 清理路径。已命中缓存只探测本地文件，不查询网络；删除/清空/检查文件不受此限制。设置修改成功保存后原子发布，新策略在下一检查点生效；系统阻塞读/DNS 不能硬中断，不保证已经开始的一次系统读立即停止。
+
+## 系统键盘输入（11-system-ime）
+
+实现：`ime_ui.[ch]`（C 输入目标、绘制、命中与提交）→ `ime_bridge.[ch]`（JNI 与有界邮箱）→ `SourceActivity.requestIme` → `ImeBridge.kt`（Android 主线程）。唯一新增 View 是约 1dp×1dp 的透明 EditText；没有可见 Kotlin 页面、对话框或自定义键盘。普通文字、候选、删除与软硬键盘选区由系统 Editable/InputConnection 编辑，C 显示快照并执行搜索/歌单保存/音源导入。
+
+| 方向 / 接收对象 | 函数名 | JNI 签名 | 线程 | 返回值 / 契约 |
+| --- | --- | --- | --- | --- |
+| C → SourceActivity | `requestIme` | `(II[BIII)Z` | NativeActivity/GL 线程调用，仅投递主线程 | action、session、标准 UTF-8 文本、选区 start/end **字节偏移**、kind；true=已投递，不代表键盘已显示；false/异常=投递失败 |
+| ImeBridge → C | `nativeIme` | `(I[BIIIII)V` | Android 主线程（TextWatcher、InputConnection、选区、EditorAction/返回） | session、UTF-8 全文、start/end、组合区 start/end、event；组合区 -1 表示无组合；不保留 JNI 引用，只复制到加锁单槽邮箱 |
+| ImeBridge → C | `nativeImeInsets` | `(II)V` | Android 主线程（WindowInsets/global layout） | IME bottom、对应 decor 高度，均为物理像素；非负且≤16384，C 按当前 surface 调整，避免 resize 后重复扣除 |
+
+- `action`：0 隐藏/归还原焦点；1 开新会话、设全文/选区、requestFocus + restartInput + showSoftInput；2 更新 C 修改的文本/选区（相同文本不 setText、不清组合）；3 使用系统 `onTextContextMenuItem(android.R.id.paste)` 在当前选区插入。`kind`：1 搜索/库查询（IME_ACTION_SEARCH），2 歌单名称（DONE），3 地址（URI/DONE）。0/2/3 的 kind 忽略。hide 使用 hideSoftInputFromWindow。
+- `event`：0 全量编辑快照（包含组合区）；1 搜索/提交；2 键盘关闭；3 可恢复的插入错误文本；4 框架调用失败（关闭当前会话，重新点击重试）。TextWatcher + InputConnectionWrapper 捕获 setComposingText/Region、commitText、finishComposingText、deleteSurroundingText/CodePoints，onSelectionChanged 捕获选区；因此中文预编辑、提交、退格、硬件快捷键走同一系统路径。组合期间 Enter 只结束组合，确认候选后 Enter 才执行 C 提交。
+- UTF-16↔UTF-8 偏移转换仅在 Kotlin 系统适配层；C 使用标准 UTF-8 字节数组，校验 UTF-8/NUL、长度、偏移范围及码点边界。关键词/名称≤255字节，地址≤2047字节，InputFilter 拒绝超限或换行并回报，不截断候选/代理对。整个脚本/JSON 沿用「粘贴导入」2MiB通道，不进入短文本框。
+- C `ime_bridge_request` 检查 GetEnv/Attach、PushLocalFrame、类/方法查找、NewByteArray、写数组、CallBooleanMethod 的异常/结果；清异常并记 LXMusicC，局部帧释放，按需 detach。回调检查数组长度/读取异常。邮箱保护 session、文本、sticky submit/hidden、错误与 insets；ALooper acquire/release 在同一锁内，停止后丢回调；先消费 submit 再 hidden，合并高频文本但不漏提交。
+- session 在 C 跨 Activity 单调分配；换页/关闭输入会失效，迟到候选不会写入其他输入框。UI/GL 线程唯一持有 Ui，Android 主线程不直接访问它。C 拖选只改变选区，不丢并发新正文；正文不变时不向系统回写，避免中断组合。主线程开键盘失败可通过再次点击同框重试；框架调用异常通过 event=4 提示并结束会话。
+- API30+ 取 `WindowInsets.Type.ime()`，adjustNothing 下由 C 收缩可用页面；26–29 使用 adjustResize、可见窗口 frame 与 system/stable insets 后备。与系统栏取最大而非相加；decor/surface 高度差扣除已 resize 的部分。旋转/分屏的短暂隐藏延迟300ms确认，API30+另用isVisible判断，避免把未覆盖顶部窗口的IME（bottom=0）误当关闭；每次创建 InputConnection 都写 NO_EXTRACT_UI/NO_FULLSCREEN，防止横屏进入全屏提取界面。
+- 返回先收键盘：EditText onKeyPreIme、系统 IME 隐藏通知与 C ui_back 都收敛为取消输入会话；随后才执行原页面返回。onPause 隐藏并同步最终正文，onDestroy 清 listener/View；C 退出先关闭桥/释放 looper。manifest 增加 screenLayout configChanges，避免分屏因该项重建 Activity 丢编辑文本。
+
+原 `requestSearchPaste/nativePaste` ABI 保留兼容，但搜索/库页的粘贴按钮已转为上述 IME 选区粘贴；音源完整正文仍走原 `requestSourcePaste`。

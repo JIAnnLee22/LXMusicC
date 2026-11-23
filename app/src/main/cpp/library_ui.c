@@ -1,4 +1,5 @@
 #include "library_ui.h"
+#include "ime_ui.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -35,21 +36,6 @@ static bool command(Ui *u,int action,uint32_t id,uint32_t song,const SearchItem 
     if(library_command(action,id,song,item,name)) return true;
     notice(u,"音乐库未就绪或队列已满，请稍后重试",now); return false;
 }
-static float keyboard(Ui *u,Renderer *r,float x,float y,float w) {
-    const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm'-"};
-    for(int row=0;row<4;++row) {
-        size_t n=strlen(rows[row]); float kw=(w-4*(n-1))/n;
-        for(size_t k=0;k<n;++k) {
-            char label[2]={rows[row][k],0};
-            button(u,r,(Rect){x+k*(kw+4),y,kw,30},label,LIBUI_KEY,rows[row][k]);
-        }
-        y+=35;
-    }
-    float kw=(w-12)/3;
-    const char *names[]={"空格","退格","清空"}; const int keys[]={32,8,127};
-    for(int i=0;i<3;++i) button(u,r,(Rect){x+i*(kw+6),y,kw,32},names[i],LIBUI_KEY,keys[i]);
-    return y+44;
-}
 float ui_library_draw(Ui *u,Renderer *r,float x,float y,float w) {
     float start=y; LibraryView *v=&u->library;
     const char *filters[]={"收藏","最近播放","我的歌单"}; float fw=(w-16)/3;
@@ -71,17 +57,14 @@ float ui_library_draw(Ui *u,Renderer *r,float x,float y,float w) {
         button(u,r,(Rect){x,y,w,36},"创建歌单",LIBUI_CREATE,0); y+=48;
     }
     const char *input=u->library_input>=2?u->library_name:u->library_query;
-    Rect box={x,y,w,42}; render_rect(r,box,12,u->library_input?TINT:CARD);
-    label(r,x+12,y+27,w-24,14,input[0]?TEXT:MUTED,input[0]?input:u->library_input>=2?"输入歌单名称":"本地搜索：歌名 / 歌手 / 专辑");
+    Rect box={x,y,w,42};
+    ui_ime_field(u,r,box,u->library_input==2?IME_CREATE:u->library_input==3?IME_RENAME:IME_LIBRARY,
+        input,u->library_input>=2?"输入歌单名称":"本地搜索：歌名 / 歌手 / 专辑");
     hit(u,box,LIBUI_INPUT,0); y+=52;
     float bw=(w-16)/3;
     button(u,r,(Rect){x,y,bw,34},"粘贴文字",LIBUI_PASTE,0);
     button(u,r,(Rect){x+bw+8,y,bw,34},u->library_input>=2?"保存名称":"搜索",LIBUI_SAVE,0);
     button(u,r,(Rect){x+2*(bw+8),y,bw,34},u->library_input?"收起 / 取消":"清除搜索",LIBUI_CANCEL,0); y+=46;
-    if(u->library_input) {
-        y=keyboard(u,r,x,y,w);
-        label(r,x,y+14,w,12,MUTED,"字母数字可直接输入；中文请复制后粘贴"); y+=30;
-    }
     // 浏览请求尚在后台计算时不显示旧列表，避免把旧页索引当成新页数据。
     if(v->request!=u->library_request || v->list!=u->library_id || strcmp(v->query,u->library_query) || v->page!=u->library_page) {
         y=render_paragraph(r,x,y,w,14,MUTED,u->library_input==1?"输入后点击搜索":
@@ -146,10 +129,13 @@ void ui_library_action(Ui *u,int action,int value,double now) {
             break;
         case LIBUI_BACK:
             u->library_id=-1; u->library_page=0; u->library_query[0]=0; u->library_input=0; ui_library_refresh(u); break;
-        case LIBUI_INPUT: if(!u->library_input) u->library_input=1; break;
+        case LIBUI_INPUT:
+            if(!u->library_input) u->library_input=1;
+            ui_ime_open(u,u->library_input==2?IME_CREATE:u->library_input==3?IME_RENAME:IME_LIBRARY); break;
         case LIBUI_CREATE: case LIBUI_RENAME:
             u->library_input=action==LIBUI_CREATE?2:3;
             snprintf(u->library_name,256,"%s",action==LIBUI_CREATE?"":u->library.title);
+            ui_ime_open(u,action==LIBUI_CREATE?IME_CREATE:IME_RENAME);
             u->state.scroll[0]=0; break;
         case LIBUI_SAVE:
             if(u->library_input>=2) {
@@ -157,14 +143,15 @@ void ui_library_action(Ui *u,int action,int value,double now) {
             } else { u->library_input=0; u->library_page=0; ui_library_refresh(u); }
             break;
         case LIBUI_CANCEL:
+            u->ime_target=0;
             if(u->library_input) u->library_input=0;
             else if(u->library_adding) u->library_adding=false;
             else { u->library_query[0]=0; u->library_page=0; ui_library_refresh(u); }
             break;
         case LIBUI_PASTE:
             if(!u->library_input) u->library_input=1;
-            u->library_paste_target=u->library_input;
-            u->library_paste_requested=true; break;
+            ui_ime_open(u,u->library_input==2?IME_CREATE:u->library_input==3?IME_RENAME:IME_LIBRARY);
+            u->ime_paste=true; break;
         case LIBUI_KEY: ui_library_key(u,value,now); break;
         case LIBUI_DELETE: case LIBUI_REMOVE:
             if(u->library_confirm_action==action && u->library_confirm==(uint32_t)value) {

@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "player_ui.h"
 #include "library_ui.h"
+#include "ime_ui.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,7 +16,7 @@ enum { ACT_TAB=1, ACT_FILTER, ACT_CHIP, ACT_SETTING, ACT_NOTICE,
     ACT_SEARCH_RETRY, ACT_SEARCH_PAGE, ACT_SEARCH_SELECT, ACT_SEARCH_KEY, ACT_SEARCH_CLOSE,
     ACT_PLAYBACK, ACT_PLAYBACK_SEEK, ACT_CACHE_OPEN, ACT_CACHE_BACK, ACT_CACHE_DOWNLOAD,
     ACT_CACHE_PAGE, ACT_CACHE_PLAY, ACT_CACHE_DELETE, ACT_CACHE_CLEAR, ACT_CACHE_LIMIT, ACT_CACHE_REFRESH,
-    ACT_PREF_WIFI, ACT_PREF_THEME, ACT_PREF_RETRY };
+    ACT_PREF_WIFI, ACT_PREF_THEME, ACT_PREF_RETRY, ACT_SOURCE_INPUT, ACT_SOURCE_SUBMIT };
 static float wrapped(Renderer *r,float x,float y,float w,float size,Color color,const char *s);
 
 static bool inside(Rect b,float x,float y) { return x>=b.x && x<b.x+b.w && y>=b.y && y<b.y+b.h; }
@@ -52,12 +53,14 @@ void ui_init(Ui *u,const UiState *saved) {
     }
     u->library_id=u->state.library_filter==2?-1:u->state.library_filter;
 }
-void ui_cancel(Ui *u) { u->pressed=u->dragging=u->seeking=false; u->velocity=0; u->pointer=-1; }
+void ui_cancel(Ui *u) {
+    u->pressed=u->dragging=u->seeking=u->ime_gesture=false; u->velocity=0; u->pointer=-1;
+}
 void ui_layout(Ui *u,Rect area) {
     u->area=area;
-    float header=area.h<380?66:92;
+    float header=u->ime_target?12:area.h<380?66:92;
     float padding=area.w<360?12:20;
-    u->body=(Rect){area.x+padding,area.y+header,fmaxf(0,area.w-2*padding),fmaxf(0,area.h-header-76)};
+    u->body=(Rect){area.x+padding,area.y+header,fmaxf(0,area.w-2*padding),fmaxf(0,area.h-header-(u->ime_target?52:76))};
 }
 
 /* 外部歌名仅在可用宽度内显示，不能画到按钮/安全区之外。 */
@@ -96,38 +99,16 @@ void ui_search_sync(Ui *u) {
         u->state.scroll[1]=0;
     }
 }
-static float keyboard(Ui *u,Renderer *r,float x,float y,float w) {
-    const char *rows[]={"1234567890","qwertyuiop","asdfghjkl","zxcvbnm'-"};
-    for(int row=0;row<4;++row) {
-        size_t n=strlen(rows[row]); float kw=(w-4*(n-1))/n;
-        for(size_t k=0;k<n;++k) {
-            char label[2]={rows[row][k],0};
-            button(u,r,(Rect){x+k*(kw+4),y,kw,30},label,ACT_SEARCH_KEY,rows[row][k],false);
-        }
-        y+=35;
-    }
-    float kw=(w-18)/4;
-    const char *labels[]={"空格","退格","清空","收起"};
-    const int keys[]={32,8,127,0};
-    for(int k=0;k<4;++k) button(u,r,(Rect){x+k*(kw+6),y,kw,32},labels[k],
-        k==3?ACT_SEARCH_CLOSE:ACT_SEARCH_KEY,keys[k],false);
-    return y+44;
-}
 static float search(Ui *u,Renderer *r,float x,float y,float w) {
     float start=y; SearchView *v=&u->search;
     Rect input={x,y,w-82,50};
-    render_rect(r,input,14,u->input_open?TINT:CARD);
-    fitted(r,x+12,y+31,input.w-24,14,u->query[0]?TEXT:MUTED,u->query[0]?u->query:"输入歌曲、歌手、专辑");
+    ui_ime_field(u,r,input,IME_SEARCH,u->query,"输入歌曲、歌手、专辑");
     hit(u,input,ACT_SEARCH_INPUT,0);
     button(u,r,(Rect){x+w-74,y,74,50},v->busy?"重搜":"搜索",ACT_SEARCH_SUBMIT,0,true); y+=60;
     float bw=(w-16)/3;
     button(u,r,(Rect){x,y,bw,34},"粘贴关键词",ACT_SEARCH_PASTE,0,false);
     button(u,r,(Rect){x+bw+8,y,bw,34},v->busy?"取消":"重试",v->busy?ACT_SEARCH_CANCEL:ACT_SEARCH_RETRY,0,false);
     button(u,r,(Rect){x+2*(bw+8),y,bw,34},"音源管理",ACT_SOURCE_OPEN,0,false); y+=46;
-    if(u->input_open) {
-        y=keyboard(u,r,x,y,w);
-        y=wrapped(r,x,y,w,12,MUTED,"字母数字可直接输入；中文请复制后粘贴"); y+=10;
-    }
     if(v->keyword[0]) {
         char query[300]; snprintf(query,sizeof(query),"搜索：%s",v->keyword);
         fitted(r,x,y+16,w,14,TEXT,query); y+=28;
@@ -174,7 +155,11 @@ static float sources(Ui *u,Renderer *r,float x,float y,float w) {
     button(u,r,(Rect){x,y,88,36},"返回设置",ACT_SOURCE_BACK,0,false);
     button(u,r,(Rect){x+100,y,w-100,36},u->sources.busy?"处理中…":"粘贴导入",ACT_SOURCE_PASTE,0,!u->sources.busy);
     y+=50;
-    y=wrapped(r,x,y,w,12,MUTED,"复制 HTTP(S) 链接、JSON 或 JS 文件内容");
+    Rect address={x,y,w-82,44};
+    ui_ime_field(u,r,address,IME_SOURCE,u->source_url,"输入音源 HTTP(S) 地址");
+    hit(u,address,ACT_SOURCE_INPUT,0);
+    button(u,r,(Rect){x+w-74,y,74,44},"导入",ACT_SOURCE_SUBMIT,0,true); y+=54;
+    y=wrapped(r,x,y,w,12,MUTED,"输入地址，或粘贴 JSON / JS 文件内容");
     y=wrapped(r,x,y+4,w,13,ACCENT,u->sources.message); y+=14;
     if(!u->sources.count) {
         render_rect(r,(Rect){x,y,w,100},16,CARD);
@@ -303,9 +288,11 @@ void ui_draw(Ui *u,Renderer *r,double now) {
     Rect a=u->area,b=u->body; u->hit_count=0;
     const float maxw=900;
     if(b.w>maxw) { b.x+=(b.w-maxw)/2; b.w=maxw; }
-    text(r,a.x+22,a.y+27,11,ACCENT,"LX MUSIC C");
-    text(r,a.x+20,a.y+(a.h<380?56:64),27,TEXT,TABS[u->state.tab]);
-    if(a.w>340) text(r,a.x+a.w-115,a.y+27,11,MUTED,"本地音乐空间");
+    if(!u->ime_target) {
+        text(r,a.x+22,a.y+27,11,ACCENT,"LX MUSIC C");
+        text(r,a.x+20,a.y+(a.h<380?56:64),27,TEXT,TABS[u->state.tab]);
+        if(a.w>340) text(r,a.x+a.w-115,a.y+27,11,MUTED,"本地音乐空间");
+    }
     float *scroll=&u->state.scroll[u->state.tab];
     render_clip(r,u->body);
     float extent=0,y=b.y-*scroll;
@@ -324,15 +311,17 @@ void ui_draw(Ui *u,Renderer *r,double now) {
         float sy=b.y+(*scroll/u->max_scroll[u->state.tab])*(b.h-thumb);
         render_rect(r,(Rect){u->body.x+u->body.w-3,sy,3,thumb},2,LINE);
     }
+    ui_ime_menu_draw(u,r);
     render_unclip(r);
-    float nav_y=a.y+a.h-68, item_w=a.w/4;
+    float nav_y=a.y+a.h-(u->ime_target?44:68), item_w=a.w/4;
     render_rect(r,(Rect){a.x,nav_y-8,a.w,1},0,LINE);
     for(int i=0;i<4;++i) {
         Rect item={a.x+i*item_w,nav_y,item_w,60}; bool active=u->state.tab==i;
-        if(active) render_rect(r,(Rect){item.x+8,item.y+1,item.w-16,56},16,TINT);
+        item.h=u->ime_target?38:60;
+        if(active) render_rect(r,(Rect){item.x+8,item.y+1,item.w-16,item.h-4},12,TINT);
         const char *icons[]={"♪","?","▶","≡"};
-        center(r,(Rect){item.x,item.y+3,item.w,24},19,active?ACCENT:MUTED,icons[i]);
-        center(r,(Rect){item.x,item.y+30,item.w,23},12,active?TEXT:MUTED,TABS[i]);
+        if(!u->ime_target) center(r,(Rect){item.x,item.y+3,item.w,24},19,active?ACCENT:MUTED,icons[i]);
+        center(r,(Rect){item.x,item.y+(u->ime_target?6:30),item.w,23},12,active?TEXT:MUTED,TABS[i]);
         hit(u,item,ACT_TAB,i);
     }
     if(u->toast_until<=now) u->toast_until=0;
@@ -348,7 +337,7 @@ bool ui_tick(Ui *u,float dt) {
     if(u->max_scroll[u->state.tab]<0) return false;
     float *s=&u->state.scroll[u->state.tab];
     float clamped=clamp(*s,0,u->max_scroll[u->state.tab]);
-    bool dirty=clamped!=*s; *s=clamped;
+    bool dirty=clamped!=*s || u->ime_relayout; *s=clamped; u->ime_relayout=false;
     dirty=ui_player_tick(u,dt)||dirty;
     if(dt<=0) return dirty;
     if(!u->pressed && fabsf(u->velocity)>3) {
@@ -361,6 +350,7 @@ bool ui_tick(Ui *u,float dt) {
 }
 
 void ui_touch(Ui *u,int action,float x,float y,double now) {
+    if(ui_ime_touch(u,action,x,y,now)) return;
     if(ui_player_touch(u,action,x,y,now)) return;
     if(action==0) {
         u->pressed=true; u->dragging=false; u->velocity=0;
@@ -392,7 +382,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
     for(int i=u->hit_count-1;i>=0;--i) {
         UiHit h=u->hits[i];
         if(!inside(h.rect,x,y) || !inside(h.rect,u->down_x,u->down_y)) continue;
-        bool nav=h.rect.y>=u->area.y+u->area.h-68;
+        bool nav=h.action==ACT_TAB;
         if(!nav && (!inside(u->body,x,y)||!inside(u->body,u->down_x,u->down_y))) continue;
         if(h.action!=ACT_SOURCE_DELETE) u->delete_id=0;
         if(h.action!=ACT_CACHE_DELETE) u->cache_delete_id=0;
@@ -400,7 +390,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
         if(h.action>=PLAYER_TOGGLE_QUEUE) { ui_player_action(u,h.action,h.value); break; }
         if(h.action>=LIBUI_FILTER) { ui_library_action(u,h.action,h.value,now); break; }
         switch(h.action) {
-            case ACT_TAB: u->state.tab=h.value; u->velocity=0; break;
+            case ACT_TAB: u->ime_target=0; u->input_open=false; u->state.tab=h.value; u->velocity=0; break;
             case ACT_FILTER: u->state.library_filter=h.value; break;
             case ACT_CHIP: u->state.search_chip=u->state.search_chip==h.value?-1:h.value; break;
             case ACT_SETTING: u->state.settings_row=u->state.settings_row==h.value?-1:h.value; break;
@@ -410,9 +400,11 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
                 break;
             case ACT_NOTICE: notice(u,h.value?"搜索输入将在后续开放":"音乐库功能将在后续开放",now); break;
             case ACT_SOURCE_OPEN: u->state.tab=3; u->cache_open=false; u->source_open=true; u->state.scroll[3]=0; u->delete_id=0; break;
-            case ACT_SEARCH_INPUT: u->input_open=!u->input_open; u->state.scroll[1]=0; break;
-            case ACT_SEARCH_SUBMIT: submit(u,now); break;
-            case ACT_SEARCH_PASTE: u->search_paste_requested=true; break;
+            case ACT_SEARCH_INPUT: u->input_open=true; ui_ime_open(u,IME_SEARCH); u->state.scroll[1]=0; break;
+            case ACT_SEARCH_SUBMIT: submit(u,now); if(!u->input_open) u->ime_target=0; break;
+            case ACT_SEARCH_PASTE: u->input_open=true; ui_ime_open(u,IME_SEARCH); u->ime_paste=true; break;
+            case ACT_SOURCE_INPUT: ui_ime_open(u,IME_SOURCE); break;
+            case ACT_SOURCE_SUBMIT: ui_ime_open(u,IME_SOURCE); ui_ime_submit(u,now); break;
             case ACT_SEARCH_CANCEL: search_cancel(); break;
             case ACT_SEARCH_RETRY:
                 if(u->search.keyword[0]) snprintf(u->query,sizeof(u->query),"%s",u->search.keyword);
@@ -485,6 +477,7 @@ void ui_touch(Ui *u,int action,float x,float y,double now) {
 
 bool ui_back(Ui *u) {
     ui_cancel(u);
+    if(u->ime_target) { u->ime_target=0; u->input_open=false; return true; }
     if(u->toast_until>0) { u->toast_until=0; return true; }
     if(u->state.tab==2 && u->queue_open) {
         ui_player_action(u,PLAYER_TOGGLE_QUEUE,0); return true;

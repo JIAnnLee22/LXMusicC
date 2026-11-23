@@ -32,10 +32,10 @@
             </intent-filter>
         </service>
 
-        <!-- 最小系统桥接，无 Kotlin UI。 -->
+        <!-- 系统桥接，仅挂载 1dp 透明 IME 输入目标，无可见 Kotlin UI。 -->
         <activity
             android:name=".SourceActivity"
-            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|density|uiMode|navigation"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode|navigation"
             android:exported="true"
             android:enableOnBackInvokedCallback="false"
             android:screenOrientation="fullSensor">
