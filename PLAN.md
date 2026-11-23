@@ -59,3 +59,33 @@
   - 确认 `docs/MILESTONE-LATEST.md` 与 `scripts/setup-android-sdk.sh` 的一致性
   - 不要自己打 tag：`pi-loop.sh` 在全部条目完成后会打 `v1.0.0` 并触发 CI 发布
   - 验收：正式 Release 能下载安装包并正常启动
+
+- [ ] `11-system-ime` 系统键盘输入（IME 桥接）
+  - Kotlin 最小桥：挂一个 1dp 透明 EditText 作为输入目标，`InputMethodManager.showSoftInput/hideSoftInput`；
+    `InputConnection`/`TextWatcher` 把组合中文本（候选词）、提交文本、删除、回车实时回传 C
+  - C 侧：搜索框、歌单命名、音源地址输入都改用系统键盘；光标/选区、长按粘贴、中文候选正常工作
+  - 键盘弹出时按 IME insets 把页面整体上移，输入框和候选栏不被遮挡；回车=搜索/提交，
+    返回键先收键盘再返回上一页
+  - 自绘键盘不再作为唯一输入方式（可以保留成可选输入，但默认走系统键盘）
+  - 验收：真机用 Gboard/搜狗输入中文歌名能出候选词并触发搜索；键盘弹出/收起布局正确；横屏、分屏都正常
+
+- [ ] `12-media-services` 系统媒体服务（其它 App / 系统可以“调用”播放）
+  - 用 Media3 的 `MediaLibraryService` 暴露可浏览结构（搜索结果 / 收藏 / 歌单 / 最近播放），带可播放队列
+  - 外部 `MediaController` 能连接并控制：play/pause/next/previous/seek/选曲；冷启动能恢复上次队列
+  - 媒体按键（蓝牙耳机/车机）、锁屏、通知、音频焦点（来电暂停后恢复、ducking）、音频输出设备跟随系统
+  - 从通知/其它 App 唤醒时进入“正在播放”；`docs/BRIDGE.md` 记录对外接口与可控命令
+  - 验收：`adb shell cmd media_session list-sessions` 能看到会话；锁屏与通知、蓝牙耳机键都能控制；
+    用 MediaBrowser 客户端（或 adb 媒体命令）能选曲播放；拔耳机暂停、来电后自动恢复
+
+- [ ] `13-app-ux` 常规音乐 App 的体验补齐
+  - 预测性返回（`enableOnBackInvokedCallback` + 返回栈）、页面转场、列表惯性滚动与“加载更多”
+  - 启动页/骨架屏/空状态/错误重试；通知权限引导，拒绝后有可读说明
+  - 键盘与列表滚动联动、横竖屏切换保持播放与滚动位置、播放中切页不中断
+  - 视觉细节：按压反馈、选中态、Snackbar 提示；系统字体缩放（fontScale）下文字不裁切
+  - 验收：连续操作 10 分钟不崩不卡；旋转、后台回来、从通知进入都符合预期；空状态与错误提示可读
+
+- [ ] `14-release-1.1` 发布 1.1.0
+  - `versionName`/`versionCode` 升到 `1.1.0`，CHANGELOG 与 README 功能说明更新（系统键盘、系统媒体控制）
+  - 补全 `docs/BRIDGE.md`（IME 与媒体服务桥）与 `docs/ARCHITECTURE.md`
+  - 不要自己打 tag：`pi-loop.sh` 完成时按 `versionName` 打 `v1.1.0`
+  - 验收：Release 里有可安装 APK；装完能走通“导入音源 → 搜索 → 播放 → 缓存 → 后台/锁屏控制”

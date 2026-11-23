@@ -17,6 +17,27 @@
 - 第三方库优先 vendor 单文件/小体量 C 库（stb、miniz、sqlite3、QuickJS/duktape 等），
   附 LICENSE 与来源说明；不要引入需要 Gradle 原生依赖的大型 SDK。
 
+## Kotlin 桥接白名单
+
+允许（尽量小、必须登记到 `docs/BRIDGE.md`）：
+
+- **IME**：1dp 透明 `EditText` + `InputConnection`/`TextWatcher`（唯一允许出现的 View，不能有可见 UI）
+- **媒体**：Media3 `ExoPlayer` / `MediaSessionService` / `MediaLibraryService` / `MediaController`
+- **存储**：MediaStore 写入公共音乐目录、应用私有目录读写
+- **网络**：`HttpURLConnection`（或已接入的系统 HTTP 能力）
+- **权限**：运行时权限请求（通知、存储等）与权限状态查询
+
+不允许：在 Kotlin/Java 里写页面、布局、列表、播放状态机、音源解析、搜索逻辑。
+
+## “像正常音乐 App” 的验收底线
+
+- 文字输入一律走**系统键盘（IME）**：中文候选词、粘贴、回车提交都要正常；自绘键盘最多作为可选备选
+- 播放必须能被**系统与其它 App 通过 MediaSession/MediaController/MediaBrowser 控制**，
+  出现在锁屏和通知上，蓝牙/耳机媒体键有效
+- 返回键与手势符合 Android 习惯：先收键盘 → 返回上一页 → 再退出
+- 空状态、错误重试、权限拒绝都有可读提示；旋转、分屏、后台回来不丢状态
+- 不做需要“看教程才会用”的交互：主流程三步内能开始播放
+
 ## 每轮交付（硬性）
 
 1. `./scripts/build.sh` 必须成功（CI 用同一份脚本）。

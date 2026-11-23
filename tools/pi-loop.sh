@@ -957,6 +957,15 @@ milestone_due() {
 
 last_tag() { cat "$STATE_DIR/last-tag" 2>/dev/null || true; }
 
+# 正式版标签取 app/build.gradle.kts 的 versionName（由 release 条目负责升级）
+release_tag() {
+    local version
+    version="$(sed -n 's/.*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$PROJECT_DIR/app/build.gradle.kts" 2>/dev/null | head -1)"
+    [ -n "$version" ] || version="1.0.0"
+    echo "v$version"
+}
+
 write_summary() {
     local tag="$1" kind="$2"
     local prev range
@@ -1038,7 +1047,12 @@ make_milestone() {
 
     local tag
     if [ "$kind" = release ]; then
-        tag="v1.0.0"
+        tag="$(release_tag)"
+        if git -C "$PROJECT_DIR" rev-parse "$tag" >/dev/null 2>&1; then
+            warn "版本号没有升级（$tag 已存在），本次改发一个进度快照"
+            kind="snapshot"
+            tag="snapshot-$(date +%Y%m%d-%H%M)"
+        fi
     else
         tag="snapshot-$(date +%Y%m%d-%H%M)"
     fi
@@ -1090,6 +1104,13 @@ build_prompt() {
 本轮只做 PLAN.md 中第一个未勾选的条目：
   ${id} — ${title}
 验收标准见 PLAN.md 该条目下的子项。不要开始后续条目，不要顺手大改无关代码。
+
+整体体验目标：像一个正常的 Android 音乐 App——
+  * 文字输入走系统键盘（IME，中文候选词/粘贴/回车都要正常），不要只靠自绘键盘；
+  * 播放能被系统、锁屏、通知、蓝牙耳机和其它 App 的 MediaController/MediaBrowser 调用；
+  * 返回键/手势、转场、空状态、权限提示都符合 Android 习惯。
+需要碰系统能力时允许写最小 Kotlin 桥（IME、Media3/MediaSessionService/MediaLibraryService、
+MediaStore、运行时权限），但必须在 docs/BRIDGE.md 登记，且业务逻辑仍留在 C。
 
 开始前先读 AGENTS.md、PLAN.md、README.md；需要时参考 docs/DECISIONS.md 与 docs/BRIDGE.md。
 同级仓库 ../CUIDemo 是一份可参考的纯 C Android UI 实现（EGL、SDF 文字、批次渲染、局部重绘）。
